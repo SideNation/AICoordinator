@@ -44,10 +44,10 @@ func runInstall() error {
 	}
 
 	// skills & docs always go to claude paths
-	if err := installGlob("packages/skills", skillsDir(flagScope), "*"); err != nil {
+	if err := installTree("packages/skills", skillsDir(flagScope)); err != nil {
 		return err
 	}
-	if err := installGlob("packages/docs", docsDir(flagScope), "*"); err != nil {
+	if err := installTree("packages/docs", docsDir(flagScope)); err != nil {
 		return err
 	}
 	return nil
@@ -113,6 +113,30 @@ func homeDir() string {
 		return h
 	}
 	return "~"
+}
+
+func installTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := copyFile(path, target); err != nil {
+			return err
+		}
+		fmt.Printf("installed %s → %s\n", path, target)
+		return nil
+	})
 }
 
 // ---------- file copy ----------

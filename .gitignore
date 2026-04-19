@@ -1,2 +1,5 @@
 .claude/settings.local.json
 cli/bin
+.claude/agents
+.claude/skills
+.claude/docs
