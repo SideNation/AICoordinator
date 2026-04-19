@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+
+      - name: Build binaries
+        working-directory: cli
+        run: |
+          mkdir -p bin
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bin/aico-darwin-arm64  ./src
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bin/aico-darwin-amd64  ./src
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bin/aico-windows-amd64.exe ./src
+          GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bin/aico-linux-amd64   ./src
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            cli/bin/aico-darwin-arm64
+            cli/bin/aico-darwin-amd64
+            cli/bin/aico-windows-amd64.exe
+            cli/bin/aico-linux-amd64

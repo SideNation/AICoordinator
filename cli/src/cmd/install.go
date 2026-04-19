@@ -12,6 +12,9 @@ import (
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install agents, skills, and docs into project or user environment",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runInstall()
+	},
 }
 
 var (
@@ -20,95 +23,42 @@ var (
 )
 
 func init() {
-	installCmd.AddCommand(installAgentCmd, installSkillsCmd, installDocsCmd)
-
-	for _, cmd := range []*cobra.Command{installAgentCmd, installSkillsCmd, installDocsCmd} {
-		cmd.Flags().StringVar(&flagScope, "scope", "project", "install scope: project or user")
-	}
-	installAgentCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
+	installCmd.Flags().StringVar(&flagScope, "scope", "project", "install scope: project or user")
+	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
 }
 
-// ---------- install agent ----------
-
-var installAgentCmd = &cobra.Command{
-	Use:   "agent",
-	Short: "Install built agent files into claude/opencode agent directories",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInstallAgent()
-	},
-}
-
-func runInstallAgent() error {
-	pkgDir := "packages/agents"
-
-	installTarget := func(src, dst string) error {
-		entries, err := filepath.Glob(filepath.Join(src, "*.md"))
-		if err != nil {
-			return fmt.Errorf("glob %s: %w", src, err)
-		}
-		if len(entries) == 0 {
-			fmt.Printf("no files in %s\n", src)
-			return nil
-		}
-		if err := os.MkdirAll(dst, 0755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dst, err)
-		}
-		for _, src := range entries {
-			name := filepath.Base(src)
-			dest := filepath.Join(dst, name)
-			if err := copyFile(src, dest); err != nil {
-				return err
-			}
-			fmt.Printf("installed %s → %s\n", src, dest)
-		}
-		return nil
-	}
-
+func runInstall() error {
+	// agents
 	doClaude := flagTarget == "claude" || flagTarget == "all"
 	doOpencode := flagTarget == "opencode" || flagTarget == "all"
 
 	if doClaude {
-		dst := agentDirClaude(flagScope)
-		if err := installTarget(filepath.Join(pkgDir, "claude"), dst); err != nil {
+		if err := installGlob("packages/agents/claude", agentDirClaude(flagScope), "*.md"); err != nil {
 			return err
 		}
 	}
 	if doOpencode {
-		dst := agentDirOpencode(flagScope)
-		if err := installTarget(filepath.Join(pkgDir, "opencode"), dst); err != nil {
+		if err := installGlob("packages/agents/opencode", agentDirOpencode(flagScope), "*.md"); err != nil {
 			return err
 		}
+	}
+
+	// skills & docs always go to claude paths
+	if err := installGlob("packages/skills", skillsDir(flagScope), "*"); err != nil {
+		return err
+	}
+	if err := installGlob("packages/docs", docsDir(flagScope), "*"); err != nil {
+		return err
 	}
 	return nil
 }
 
-// ---------- install skills ----------
-
-var installSkillsCmd = &cobra.Command{
-	Use:   "skills",
-	Short: "Install skill files into .claude/skills (project or user)",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInstallDir("packages/skills", skillsDir(flagScope), "skill")
-	},
-}
-
-// ---------- install docs ----------
-
-var installDocsCmd = &cobra.Command{
-	Use:   "docs",
-	Short: "Install doc files into .claude/docs (project or user)",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInstallDir("packages/docs", docsDir(flagScope), "doc")
-	},
-}
-
-func runInstallDir(src, dst, kind string) error {
-	entries, err := filepath.Glob(filepath.Join(src, "*"))
+func installGlob(src, dst, pattern string) error {
+	entries, err := filepath.Glob(filepath.Join(src, pattern))
 	if err != nil {
 		return fmt.Errorf("glob %s: %w", src, err)
 	}
 	if len(entries) == 0 {
-		fmt.Printf("no files in %s\n", src)
 		return nil
 	}
 	if err := os.MkdirAll(dst, 0755); err != nil {
@@ -123,7 +73,7 @@ func runInstallDir(src, dst, kind string) error {
 		if err := copyFile(f, dest); err != nil {
 			return err
 		}
-		fmt.Printf("installed %s %s → %s\n", kind, f, dest)
+		fmt.Printf("installed %s → %s\n", f, dest)
 	}
 	return nil
 }

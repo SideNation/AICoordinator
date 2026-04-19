@@ -179,9 +179,9 @@ aico agent validate agents/code-reviewer.md
 
 ## `aico install` — 환경에 설치
 
-`packages/` 아래 완성된 파일을 실제 Claude Code·opencode가 읽는 경로에 복사합니다.
+`packages/` 아래 완성된 파일(agents·skills·docs)을 한 번에 Claude Code·opencode가 읽는 경로에 복사합니다.
 
-### 설치 경로 정리
+### 설치 경로
 
 | 종류 | scope=project | scope=user |
 |---|---|---|
@@ -192,51 +192,29 @@ aico agent validate agents/code-reviewer.md
 
 > skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
 
-### `aico install agent` — 에이전트 설치
-
 ```bash
-# 기본: project 스코프, claude 대상
-aico install agent
+# 기본: project 스코프, Claude agent만
+aico install
 
-# opencode 대상만
-aico install agent --target opencode
+# opencode agent도 함께
+aico install --target all
 
-# Claude + opencode 모두
-aico install agent --target all
+# opencode agent만
+aico install --target opencode
 
-# 사용자 환경(~/.claude/agents, ~/.config/opencode/agents)에 설치
-aico install agent --scope user
+# 사용자 환경(~/.claude, ~/.config/opencode)에 설치
+aico install --scope user
 
-# opencode를 사용자 환경에 설치
-aico install agent --target opencode --scope user
+# 사용자 환경에 전체 설치
+aico install --scope user --target all
 ```
 
-### `aico install skills` — 스킬 설치
+### install 플래그
 
-```bash
-# 프로젝트 환경 (.claude/skills/)
-aico install skills
-
-# 사용자 환경 (~/.claude/skills/)
-aico install skills --scope user
-```
-
-### `aico install docs` — 문서 설치
-
-```bash
-# 프로젝트 환경 (.claude/docs/)
-aico install docs
-
-# 사용자 환경 (~/.claude/docs/)
-aico install docs --scope user
-```
-
-### install 플래그 요약
-
-| 플래그 | 기본값 | 적용 커맨드 | 설명 |
-|---|---|---|---|
-| `--scope` | `project` | agent, skills, docs | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
-| `--target` | `claude` | agent | `claude`, `opencode`, `all` |
+| 플래그 | 기본값 | 설명 |
+|---|---|---|
+| `--scope` | `project` | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
+| `--target` | `claude` | agent 대상: `claude`, `opencode`, `all` |
 
 ---
 
