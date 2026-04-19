@@ -177,9 +177,50 @@ aico agent validate agents/code-reviewer.md
 
 ---
 
+## `aico init` — 패키지 저장소 초기화
+
+원하는 폴더로 이동한 뒤 한 번 실행합니다. `PACKAGE_GIT_URL`을 읽어 **현재 폴더 안에** 패키지 저장소를 git clone하고 `~/.aico/.aicorc`에 경로를 기록합니다.
+
+### 동작 순서
+
+1. 실행 폴더의 `.env` 파일에서 `PACKAGE_GIT_URL` 로드.
+2. 없으면 환경변수, 그것도 없으면 대화형으로 URL 입력.
+3. `<cwd>/<repo-name>/`가 없으면 `git clone`, 이미 있으면 `git pull --ff-only`.
+    - 디렉터리 이름은 git URL 끝 세그먼트에서 `.git` 접미사를 제거한 값입니다. 예: `git@github.com:acme/aico-packages.git` → `./aico-packages/`.
+4. `~/.aico/.aicorc` 에 `init_dir`, `clone_dir`, `git_url` 저장.
+
+```bash
+# 패키지 저장소를 둘 폴더로 이동
+cd ~/work
+
+# .env에 PACKAGE_GIT_URL을 적어 두고 실행
+echo "PACKAGE_GIT_URL=git@github.com:acme/aico-packages.git" > .env
+aico init
+# → ~/work/aico-packages/ 에 clone
+
+# 또는 환경변수로
+PACKAGE_GIT_URL=https://github.com/acme/aico-packages.git aico init
+
+# 아무 값도 없으면 CLI가 URL을 물어봅니다
+aico init
+# → PACKAGE_GIT_URL (git clone URL): _
+```
+
+생성되는 파일:
+```
+<init 실행 폴더>/
+  <repo-name>/     # git clone된 패키지 저장소
+  .env             # (선택) PACKAGE_GIT_URL 저장
+~/.aico/
+  .aicorc          # YAML: init_dir, clone_dir, git_url
+  .lock            # YAML: install 기록 (install 실행 시 생성)
+```
+
+---
+
 ## `aico install` — 환경에 설치
 
-`packages/` 아래 완성된 파일(agents·skills·docs)을 한 번에 Claude Code·opencode가 읽는 경로에 복사합니다.
+패키지 저장소(`<clone_dir>/packages/`)에서 완성된 파일을 Claude Code·opencode가 읽는 경로에 복사합니다. 설치 정보는 `~/.aico/.lock`에 기록되어 이후 `aico update`가 추적합니다.
 
 ### 설치 경로
 
@@ -192,9 +233,21 @@ aico agent validate agents/code-reviewer.md
 
 > skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
 
+### 기본 설치 범위
+
+| 항목 | 기본 | 비고 |
+|---|---|---|
+| Claude agent | ✅ | `--target opencode` / `--target all`로 전환·확장 |
+| opencode agent | ❌ | `--target` 지정 필요 |
+| skills | ✅ | 항상 설치 |
+| docs | ❌ | `--docs` 플래그로 활성화 |
+
 ```bash
-# 기본: project 스코프, Claude agent만
+# 기본: project 스코프, Claude agent + skills
 aico install
+
+# docs까지 함께 설치
+aico install --docs
 
 # opencode agent도 함께
 aico install --target all
@@ -202,11 +255,11 @@ aico install --target all
 # opencode agent만
 aico install --target opencode
 
-# 사용자 환경(~/.claude, ~/.config/opencode)에 설치
-aico install --scope user
+# 사용자 환경(~/.claude, ~/.config/opencode)에 docs 포함 설치
+aico install --scope user --docs
 
-# 사용자 환경에 전체 설치
-aico install --scope user --target all
+# 사용자 환경에 전체 설치 (Claude + opencode + docs)
+aico install --scope user --target all --docs
 ```
 
 ### install 플래그
@@ -215,6 +268,39 @@ aico install --scope user --target all
 |---|---|---|
 | `--scope` | `project` | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
 | `--target` | `claude` | agent 대상: `claude`, `opencode`, `all` |
+| `--docs` | `false` | docs 포함 여부 |
+| `--src` | (auto) | 패키지 소스 디렉터리 오버라이드. 기본은 `.aicorc`의 `clone_dir/packages` |
+
+---
+
+## `aico update` — 최신 패키지로 갱신
+
+1. `.aicorc`의 `clone_dir`에서 `git pull --ff-only`.
+2. `.lock`의 기록 중 조건에 맞는 설치 지점에 재설치.
+
+```bash
+# 기본: 현재 폴더가 설치되어 있다면 현재 폴더만 업데이트
+aico update
+
+# 사용자 환경만 업데이트
+aico update --user
+
+# .lock에 기록된 모든 설치를 업데이트 (존재하지 않는 project 폴더는 .lock에서 제거)
+aico update --all
+
+# 업데이트와 동시에 docs도 설치/갱신
+aico update --all --docs
+```
+
+### update 플래그
+
+| 플래그 | 기본값 | 설명 |
+|---|---|---|
+| `--all` | `false` | 추적 중인 모든 설치를 업데이트하고, 사라진 project 폴더는 `.lock`에서 제거 |
+| `--user` | `false` | user 스코프 설치만 업데이트 |
+| `--docs` | `false` | docs가 미설치된 곳에도 docs를 설치 |
+
+> 이미 docs가 설치된 설치 지점은 자동으로 docs를 함께 갱신합니다.
 
 ---
 
@@ -268,7 +354,11 @@ cli/
 │   ├── cmd/
 │   │   ├── root.go
 │   │   ├── agent.go            # split / build / validate 서브커맨드
-│   │   └── install.go          # install agent / skills / docs 서브커맨드
+│   │   ├── install.go          # install 커맨드
+│   │   ├── init.go             # init 커맨드 (.env 로드, git clone, .aicorc 저장)
+│   │   └── update.go           # update 커맨드 (git pull + 재설치)
+│   ├── config/
+│   │   └── config.go           # ~/.aico/.aicorc, .lock 로드·저장
 │   ├── agent/
 │   │   ├── model.go            # Source, ClaudeOut, OpencodeOut 구조체
 │   │   ├── parser.go           # 프론트매터 파싱, 유효성 검사
@@ -283,7 +373,8 @@ cli/
 │   └── fixtures/               # 테스트용 샘플 마크다운
 ├── docs/
 │   ├── prd_v1.md               # 제품 개발 계획서 v1
-│   └── prd_v2.md               # 제품 개발 계획서 v2 (install 커맨드)
+│   ├── prd_v2.md               # 제품 개발 계획서 v2 (install 커맨드)
+│   └── prd_v3.md               # 제품 개발 계획서 v3 (init / update / .lock)
 ├── build.sh                    # 멀티 플랫폼 빌드 스크립트
 ├── go.mod
 └── go.sum
