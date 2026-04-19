@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
@@ -19,13 +20,11 @@ var updateCmd = &cobra.Command{
 var (
 	flagUpdateAll  bool
 	flagUpdateUser bool
-	flagUpdateDocs bool
 )
 
 func init() {
 	updateCmd.Flags().BoolVar(&flagUpdateAll, "all", false, "update every tracked install in .lock (prunes missing project dirs)")
 	updateCmd.Flags().BoolVar(&flagUpdateUser, "user", false, "update only the user-scope install")
-	updateCmd.Flags().BoolVar(&flagUpdateDocs, "docs", false, "also install docs where missing")
 	rootCmd.AddCommand(updateCmd)
 }
 
@@ -40,7 +39,7 @@ func runUpdate() error {
 
 	// Step 1: pull latest. A pull failure (offline, detached HEAD, unconfigured
 	// upstream, etc.) should NOT block reinstall — the local clone is still a
-	// valid source and --docs may need to fill in missing files.
+	// valid source.
 	fmt.Printf("→ pulling %s\n", rc.CloneDir)
 	if err := runGit(rc.CloneDir, "pull", "--ff-only"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: git pull failed (%v) — continuing with current clone\n", err)
@@ -62,12 +61,10 @@ func runUpdate() error {
 	version := gitCommit(rc.CloneDir)
 
 	for i, rec := range records {
-		docs := rec.Docs || flagUpdateDocs
-		fmt.Printf("→ updating %s (scope=%s target=%s docs=%v)\n", rec.Path, rec.Scope, rec.Target, docs)
-		if err := installAtPath(src, rec.Path, rec.Scope, rec.Target, docs); err != nil {
+		fmt.Printf("→ updating %s (scope=%s target=%s docs=%v)\n", rec.Path, rec.Scope, rec.Target, rec.Docs)
+		if err := updateRecord(src, rec); err != nil {
 			return err
 		}
-		records[i].Docs = docs
 		records[i].Version = version
 		lock.Upsert(records[i])
 	}
@@ -105,18 +102,31 @@ func pickUpdateRecords(lock *config.Lock, rc *config.Rc) []config.InstallRecord 
 	return out
 }
 
-// installAtPath runs doInstall with cwd temporarily set so relative project
-// paths (.claude/agents, .opencode/agents) resolve to the record's Path.
-func installAtPath(src, path, scope, target string, docs bool) error {
-	if scope == "project" {
+// updateRecord reinstalls agents, skills, and the exact set of docs this
+// record previously had. Existing doc directories are removed before reinstall
+// so old files don't linger.
+func updateRecord(src string, rec config.InstallRecord) error {
+	if rec.Scope == "project" {
 		orig, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		if err := os.Chdir(path); err != nil {
-			return fmt.Errorf("chdir %s: %w", path, err)
+		if err := os.Chdir(rec.Path); err != nil {
+			return fmt.Errorf("chdir %s: %w", rec.Path, err)
 		}
 		defer os.Chdir(orig)
 	}
-	return doInstall(src, scope, target, docs)
+
+	// Wipe each tracked doc dir so installTree reinstalls cleanly.
+	for _, name := range rec.Docs {
+		target := filepath.Join(docsDir(rec.Scope), name)
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("remove %s: %w", target, err)
+		}
+	}
+
+	if _, err := doInstall(src, rec.Scope, rec.Target, rec.Docs); err != nil {
+		return err
+	}
+	return nil
 }

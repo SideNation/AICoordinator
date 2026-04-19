@@ -16,61 +16,115 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install agents, skills, and (optionally) docs into project or user environment",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInstall()
+		return runInstall(cmd)
 	},
 }
 
 var (
 	flagScope  string // "project" | "user"
 	flagTarget string // "claude" | "opencode" | "all"
-	flagDocs   bool   // include docs (default false)
+	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
 	flagSrc    string // override packages source root
 )
 
 func init() {
 	installCmd.Flags().StringVar(&flagScope, "scope", "project", "install scope: project or user")
 	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
-	installCmd.Flags().BoolVar(&flagDocs, "docs", false, "also install docs (default: skipped)")
+	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
+	// allow bare `--docs` (no value) to mean "all docs"
+	installCmd.Flags().Lookup("docs").NoOptDefVal = "*"
 	installCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
 
-func runInstall() error {
+func runInstall(cmd *cobra.Command) error {
 	src, err := resolvePackagesSrc()
 	if err != nil {
 		return err
 	}
-	if err := doInstall(src, flagScope, flagTarget, flagDocs); err != nil {
+
+	docsReq := parseDocsFlag(cmd, src)
+	installed, err := doInstall(src, flagScope, flagTarget, docsReq)
+	if err != nil {
 		return err
 	}
-	return recordInstall(src, flagScope, flagTarget, flagDocs)
+	return recordInstall(src, flagScope, flagTarget, installed)
 }
 
-// doInstall copies agents (and optionally docs/skills) from src packages dir
-// into the scope's destinations.
-func doInstall(src, scope, target string, withDocs bool) error {
+// parseDocsFlag translates the --docs flag into a list of doc names to install.
+// Returns nil when the flag was not set, meaning "no docs".
+func parseDocsFlag(cmd *cobra.Command, src string) []string {
+	if !cmd.Flags().Changed("docs") {
+		return nil
+	}
+	if flagDocs == "*" || strings.TrimSpace(flagDocs) == "" {
+		// bare --docs → all available docs
+		return listDocs(filepath.Join(src, "docs"))
+	}
+	var out []string
+	for _, p := range strings.Split(flagDocs, ",") {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// listDocs returns top-level directory names under the docs package root.
+func listDocs(docsSrc string) []string {
+	entries, err := os.ReadDir(docsSrc)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// doInstall copies agents, skills, and selected docs into the scope's
+// destinations. Returns the subset of docs that were actually installed
+// (missing-in-source or already-installed are skipped).
+func doInstall(src, scope, target string, docsReq []string) ([]string, error) {
 	doClaude := target == "claude" || target == "all"
 	doOpencode := target == "opencode" || target == "all"
 
 	if doClaude {
 		if err := installGlob(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), "*.md"); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if doOpencode {
 		if err := installGlob(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), "*.md"); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if err := installTree(filepath.Join(src, "skills"), skillsDir(scope)); err != nil {
-		return err
+		return nil, err
 	}
-	if withDocs {
-		if err := installTree(filepath.Join(src, "docs"), docsDir(scope)); err != nil {
-			return err
+
+	var installedDocs []string
+	for _, name := range docsReq {
+		docSrc := filepath.Join(src, "docs", name)
+		if _, err := os.Stat(docSrc); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: doc %q not found in package source, skipping\n", name)
+			continue
 		}
+		docDst := filepath.Join(docsDir(scope), name)
+		if _, err := os.Stat(docDst); err == nil {
+			fmt.Printf("docs: %s already installed, skipping\n", name)
+			installedDocs = append(installedDocs, name)
+			continue
+		}
+		if err := installTree(docSrc, docDst); err != nil {
+			return nil, err
+		}
+		installedDocs = append(installedDocs, name)
 	}
-	return nil
+	return installedDocs, nil
 }
 
 // resolvePackagesSrc returns the root of `agents/ skills/ docs/` to install from.
@@ -94,8 +148,9 @@ func resolvePackagesSrc() (string, error) {
 	return "", fmt.Errorf("no package source found — run `aico init` first or pass --src")
 }
 
-// recordInstall updates ~/.aico/.lock with this install.
-func recordInstall(src, scope, target string, withDocs bool) error {
+// recordInstall updates ~/.aico/.lock with this install. New docs are merged
+// with any previously tracked docs for the same (path, scope) entry.
+func recordInstall(src, scope, target string, newDocs []string) error {
 	lock, err := config.LoadLock()
 	if err != nil {
 		return err
@@ -104,17 +159,43 @@ func recordInstall(src, scope, target string, withDocs bool) error {
 	installPath := scopeRoot(scope)
 	version := gitCommit(repoRoot(src))
 
+	var existing []string
+	for _, r := range lock.Installs {
+		if r.Path == installPath && r.Scope == scope {
+			existing = r.Docs
+			break
+		}
+	}
+
 	lock.Upsert(config.InstallRecord{
 		Path:    installPath,
 		Scope:   scope,
 		Target:  target,
-		Docs:    withDocs,
+		Docs:    mergeDocs(existing, newDocs),
 		Version: version,
 	})
 	if err := config.SaveLock(lock); err != nil {
 		return fmt.Errorf("save .lock: %w", err)
 	}
 	return nil
+}
+
+func mergeDocs(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // scopeRoot returns the anchor directory for a scope record — project uses CWD
