@@ -35,3 +35,20 @@ fi
 echo ""
 echo "Done. Artifacts in $OUT/:"
 ls -lh "$OUT/"
+
+# Install native binary to local PATH
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
+cp "$OUT/$BINARY" "$INSTALL_DIR/$BINARY"
+chmod +x "$INSTALL_DIR/$BINARY"
+echo ""
+echo "==> Installed $BINARY to $INSTALL_DIR/$BINARY"
+
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    echo "    NOTE: $INSTALL_DIR is not in PATH."
+    echo "    Add the following to your shell profile:"
+    echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
+    ;;
+esac
