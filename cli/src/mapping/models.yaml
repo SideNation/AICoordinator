@@ -1,0 +1,9 @@
+# alias -> opencode provider/model-id
+# Reverse (provider/model-id -> alias) is derived at runtime
+aliases:
+  sonnet: "anthropic/claude-sonnet-4-6"
+  opus: "anthropic/claude-opus-4-7"
+  haiku: "anthropic/claude-haiku-4-5-20251001"
+  sonnet-4-6: "anthropic/claude-sonnet-4-6"
+  opus-4-7: "anthropic/claude-opus-4-7"
+  haiku-4-5: "anthropic/claude-haiku-4-5-20251001"
