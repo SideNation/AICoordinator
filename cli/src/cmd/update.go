@@ -38,10 +38,12 @@ func runUpdate() error {
 		return fmt.Errorf(".aicorc not found — run `aico init` first")
 	}
 
-	// Step 1: pull latest
+	// Step 1: pull latest. A pull failure (offline, detached HEAD, unconfigured
+	// upstream, etc.) should NOT block reinstall — the local clone is still a
+	// valid source and --docs may need to fill in missing files.
 	fmt.Printf("→ pulling %s\n", rc.CloneDir)
 	if err := runGit(rc.CloneDir, "pull", "--ff-only"); err != nil {
-		return fmt.Errorf("git pull: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: git pull failed (%v) — continuing with current clone\n", err)
 	}
 
 	lock, err := config.LoadLock()
