@@ -175,7 +175,72 @@ aico agent validate agents/code-reviewer.md
 # → 오류 없으면 exit 0, 오류 있으면 목록 출력 후 exit 1
 ```
 
-### 플래그 요약
+---
+
+## `aico install` — 환경에 설치
+
+`packages/` 아래 완성된 파일을 실제 Claude Code·opencode가 읽는 경로에 복사합니다.
+
+### 설치 경로 정리
+
+| 종류 | scope=project | scope=user |
+|---|---|---|
+| Claude agent | `.claude/agents/` | `~/.claude/agents/` |
+| opencode agent | `.opencode/agents/` | `~/.config/opencode/agents/` |
+| skills | `.claude/skills/` | `~/.claude/skills/` |
+| docs | `.claude/docs/` | `~/.claude/docs/` |
+
+> skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
+
+### `aico install agent` — 에이전트 설치
+
+```bash
+# 기본: project 스코프, claude 대상
+aico install agent
+
+# opencode 대상만
+aico install agent --target opencode
+
+# Claude + opencode 모두
+aico install agent --target all
+
+# 사용자 환경(~/.claude/agents, ~/.config/opencode/agents)에 설치
+aico install agent --scope user
+
+# opencode를 사용자 환경에 설치
+aico install agent --target opencode --scope user
+```
+
+### `aico install skills` — 스킬 설치
+
+```bash
+# 프로젝트 환경 (.claude/skills/)
+aico install skills
+
+# 사용자 환경 (~/.claude/skills/)
+aico install skills --scope user
+```
+
+### `aico install docs` — 문서 설치
+
+```bash
+# 프로젝트 환경 (.claude/docs/)
+aico install docs
+
+# 사용자 환경 (~/.claude/docs/)
+aico install docs --scope user
+```
+
+### install 플래그 요약
+
+| 플래그 | 기본값 | 적용 커맨드 | 설명 |
+|---|---|---|---|
+| `--scope` | `project` | agent, skills, docs | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
+| `--target` | `claude` | agent | `claude`, `opencode`, `all` |
+
+---
+
+### agent 플래그 요약
 
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
@@ -224,7 +289,8 @@ cli/
 │   ├── main.go
 │   ├── cmd/
 │   │   ├── root.go
-│   │   └── agent.go            # split / build / validate 서브커맨드
+│   │   ├── agent.go            # split / build / validate 서브커맨드
+│   │   └── install.go          # install agent / skills / docs 서브커맨드
 │   ├── agent/
 │   │   ├── model.go            # Source, ClaudeOut, OpencodeOut 구조체
 │   │   ├── parser.go           # 프론트매터 파싱, 유효성 검사
@@ -238,7 +304,8 @@ cli/
 ├── test/
 │   └── fixtures/               # 테스트용 샘플 마크다운
 ├── docs/
-│   └── prd_v1.md               # 제품 개발 계획서
+│   ├── prd_v1.md               # 제품 개발 계획서 v1
+│   └── prd_v2.md               # 제품 개발 계획서 v2 (install 커맨드)
 ├── build.sh                    # 멀티 플랫폼 빌드 스크립트
 ├── go.mod
 └── go.sum
