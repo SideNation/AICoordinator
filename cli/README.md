@@ -240,25 +240,34 @@ aico init
 | Claude agent | ✅ | `--target opencode` / `--target all`로 전환·확장 |
 | opencode agent | ❌ | `--target` 지정 필요 |
 | skills | ✅ | 항상 설치 |
-| docs | ❌ | `--docs` 플래그로 활성화 |
+| docs | ❌ | `--docs` 플래그로 활성화 (이름 선택 가능) |
+
+### `--docs` 동작
+
+- 플래그 없음 → docs 미설치
+- `--docs` (값 없음) → `packages/docs/` 아래 **모든** docs 설치
+- `--docs=이름1,이름2` → 지정한 docs만 설치 (쉼표 구분, 공백 허용)
+- **이미 설치된 docs는 자동 스킵**. 다시 내려받으려면 `aico update`를 사용하세요.
+- 설치된 docs 이름은 `~/.aico/.lock`에 기록되어 이후 `update`가 같은 목록으로 재설치합니다.
 
 ```bash
 # 기본: project 스코프, Claude agent + skills
 aico install
 
-# docs까지 함께 설치
+# 모든 docs 설치
 aico install --docs
+
+# 선택한 docs만 설치
+aico install --docs=backnd-base
+aico install --docs=backnd-base,frontend-guide
 
 # opencode agent도 함께
 aico install --target all
 
-# opencode agent만
-aico install --target opencode
-
 # 사용자 환경(~/.claude, ~/.config/opencode)에 docs 포함 설치
 aico install --scope user --docs
 
-# 사용자 환경에 전체 설치 (Claude + opencode + docs)
+# 사용자 환경에 전체 설치 (Claude + opencode + 모든 docs)
 aico install --scope user --target all --docs
 ```
 
@@ -268,15 +277,19 @@ aico install --scope user --target all --docs
 |---|---|---|
 | `--scope` | `project` | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
 | `--target` | `claude` | agent 대상: `claude`, `opencode`, `all` |
-| `--docs` | `false` | docs 포함 여부 |
+| `--docs` | (unset) | 지정하면 docs 설치. 값 없으면 전부, `a,b` 형식으로 선택 설치. 이미 설치된 것은 스킵 |
 | `--src` | (auto) | 패키지 소스 디렉터리 오버라이드. 기본은 `.aicorc`의 `clone_dir/packages` |
 
 ---
 
 ## `aico update` — 최신 패키지로 갱신
 
-1. `.aicorc`의 `clone_dir`에서 `git pull --ff-only`.
-2. `.lock`의 기록 중 조건에 맞는 설치 지점에 재설치.
+1. `.aicorc`의 `clone_dir`에서 `git pull --ff-only` (실패해도 계속 진행).
+2. `.lock`의 기록 중 조건에 맞는 설치 지점을 **현재 설치된 구성 그대로** 재설치.
+   - agent·skills는 항상 갱신.
+   - docs는 `.lock`에 기록된 이름 목록을 통째로 재설치(기존 디렉터리는 깨끗하게 교체).
+
+새 docs를 추가로 설치하려면 `aico install --docs=<이름>`을 사용하세요. `update`는 새 docs를 추가하지 않고, 이미 설치된 항목만 최신 상태로 맞춥니다.
 
 ```bash
 # 기본: 현재 폴더가 설치되어 있다면 현재 폴더만 업데이트
@@ -287,9 +300,6 @@ aico update --user
 
 # .lock에 기록된 모든 설치를 업데이트 (존재하지 않는 project 폴더는 .lock에서 제거)
 aico update --all
-
-# 업데이트와 동시에 docs도 설치/갱신
-aico update --all --docs
 ```
 
 ### update 플래그
@@ -298,9 +308,6 @@ aico update --all --docs
 |---|---|---|
 | `--all` | `false` | 추적 중인 모든 설치를 업데이트하고, 사라진 project 폴더는 `.lock`에서 제거 |
 | `--user` | `false` | user 스코프 설치만 업데이트 |
-| `--docs` | `false` | docs가 미설치된 곳에도 docs를 설치 |
-
-> 이미 docs가 설치된 설치 지점은 자동으로 docs를 함께 갱신합니다.
 
 ---
 
