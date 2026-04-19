@@ -86,6 +86,7 @@
   - 표: GFM 테이블 유지
   - 내부 링크: 수집된 URL이면 상대 경로(.md)로 재작성, 아니면 원본 URL 유지
   - 이미지: `src` 절대화하여 유지 (v1은 재호스팅 안 함)
+  - 동영상(YouTube·Vimeo 등): **링크만 추가**. `<iframe>`·`<video>` 임베드는 원본 재생 URL로 환원하여 `[영상: <제목>](<url>)` 형태의 텍스트 링크로 치환 (다운로드/썸네일 임베드 없음)
 - **프론트매터**:
   ```yaml
   ---
@@ -165,3 +166,4 @@ docs:
 - 증분 업데이트 (ETag/Last-Modified 기반 부분 재수집)
 - 여러 사이트 병렬 처리
 - 변환 품질 평가용 diff 리포트
+- 동영상 트랜스크립트 추출 (`--video-mode transcript`, YouTube `youtube-transcript-api`/`yt-dlp`, Vimeo oEmbed). `has_transcripts: true` 프론트매터 마커, `<details>` 블록 포맷 고정.
