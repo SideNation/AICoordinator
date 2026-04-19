@@ -3,3 +3,4 @@ cli/bin
 .claude/agents
 .claude/skills
 .claude/docs
+.claude/settings.json

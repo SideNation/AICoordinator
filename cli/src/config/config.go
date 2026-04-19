@@ -25,11 +25,47 @@ type Rc struct {
 
 // InstallRecord describes one install destination tracked in .lock.
 type InstallRecord struct {
-	Path    string `yaml:"path"`              // absolute install directory (project root or user home)
-	Scope   string `yaml:"scope"`             // "project" | "user"
-	Target  string `yaml:"target"`            // "claude" | "opencode" | "all"
-	Docs    bool   `yaml:"docs"`              // whether docs were installed
-	Version string `yaml:"version,omitempty"` // package repo commit hash at install time
+	Path    string   `yaml:"path"`              // absolute install directory (project root or user home)
+	Scope   string   `yaml:"scope"`             // "project" | "user"
+	Target  string   `yaml:"target"`            // "claude" | "opencode" | "all"
+	Docs    []string `yaml:"docs,omitempty"`    // names of installed docs (each is a subdir under packages/docs/)
+	Version string   `yaml:"version,omitempty"` // package repo commit hash at install time
+}
+
+// UnmarshalYAML accepts the legacy `docs: true/false` bool form as well as the
+// current `docs: [name, ...]` list form. Legacy `true` is downgraded to an
+// empty list (treated as "docs were installed but names unknown"); `false`
+// becomes nil.
+func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
+	type rawBool struct {
+		Path    string `yaml:"path"`
+		Scope   string `yaml:"scope"`
+		Target  string `yaml:"target"`
+		Docs    bool   `yaml:"docs"`
+		Version string `yaml:"version,omitempty"`
+	}
+	type rawList struct {
+		Path    string   `yaml:"path"`
+		Scope   string   `yaml:"scope"`
+		Target  string   `yaml:"target"`
+		Docs    []string `yaml:"docs,omitempty"`
+		Version string   `yaml:"version,omitempty"`
+	}
+	var list rawList
+	if err := node.Decode(&list); err == nil {
+		r.Path, r.Scope, r.Target = list.Path, list.Scope, list.Target
+		r.Docs, r.Version = list.Docs, list.Version
+		return nil
+	}
+	var b rawBool
+	if err := node.Decode(&b); err != nil {
+		return err
+	}
+	r.Path, r.Scope, r.Target, r.Version = b.Path, b.Scope, b.Target, b.Version
+	if b.Docs {
+		r.Docs = []string{}
+	}
+	return nil
 }
 
 type Lock struct {
