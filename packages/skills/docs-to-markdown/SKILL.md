@@ -1,13 +1,13 @@
 ---
 name: docs-to-markdown
-description: Convert a public documentation site (framework/library official docs, etc.) into a tree of local Markdown files. Triggers when the user asks to "수집/변환/미러/크롤/markdownify" a docs URL or explicitly invokes /docs-to-markdown. Drives two subagents (link-harvester, markdown-converter) via Playwright MCP and updates lock.yaml.
+description: Convert a public documentation site (framework/library official docs, etc.) into a tree of local Markdown files. Triggers when the user asks to "수집/변환/미러/크롤/markdownify" a docs URL or explicitly invokes /docs-to-markdown. Drives two subagents (link-harvester, markdown-converter) via Playwright MCP and updates manifest.yaml.
 ---
 
 # docs-to-markdown
 
 Use this skill when the user wants to mirror a documentation site to local
 Markdown. You own argument parsing, directory layout, subagent orchestration,
-and the final `lock.yaml` update. The actual browser work lives in the two
+and the final `manifest.yaml` update. The actual browser work lives in the two
 subagents — do not open a browser from this skill directly.
 
 ## When to invoke
@@ -22,18 +22,18 @@ subagents — do not open a browser from this skill directly.
 /docs-to-markdown <url> --name <name> [flags]
 ```
 
-| Arg                    | Type   | Required | Default      | Notes                                        |
-| ---------------------- | ------ | -------- | ------------ | -------------------------------------------- |
-| `url`                  | string | yes      | —            | Entry URL of the docs (a nav must be visible)|
-| `--name`               | string | yes      | —            | Output folder `packages/docs/<name>/`        |
-| `--nav-selector`       | string | no       | auto         | Override nav root CSS selector               |
-| `--content-selector`   | string | no       | auto         | Override content container CSS selector      |
-| `--include`            | glob   | no       | `*`          | URL path include filter                      |
-| `--exclude`            | glob   | no       | —            | URL path exclude filter                      |
-| `--resume`             | bool   | no       | `true`       | Merge with existing `links.json`             |
-| `--rate-limit-ms`      | int    | no       | `300`        | Delay between page fetches                   |
-| `--max-errors`         | int    | no       | `20`         | Abort threshold during conversion            |
-| `--video-mode`         | enum   | no       | `link`       | v1 supports `link` only                      |
+| Arg                  | Type   | Required | Default | Notes                                         |
+| -------------------- | ------ | -------- | ------- | --------------------------------------------- |
+| `url`                | string | yes      | —       | Entry URL of the docs (a nav must be visible) |
+| `--name`             | string | yes      | —       | Output folder `packages/docs/<name>/`         |
+| `--nav-selector`     | string | no       | auto    | Override nav root CSS selector                |
+| `--content-selector` | string | no       | auto    | Override content container CSS selector       |
+| `--include`          | glob   | no       | `*`     | URL path include filter                       |
+| `--exclude`          | glob   | no       | —       | URL path exclude filter                       |
+| `--resume`           | bool   | no       | `true`  | Merge with existing `links.json`              |
+| `--rate-limit-ms`    | int    | no       | `300`   | Delay between page fetches                    |
+| `--max-errors`       | int    | no       | `20`    | Abort threshold during conversion             |
+| `--video-mode`       | enum   | no       | `link`  | v1 supports `link` only                       |
 
 If `url` or `--name` is missing, prompt the user once with a brief example:
 `/docs-to-markdown https://react.dev/reference --name react`.
@@ -90,16 +90,16 @@ video_mode: <--video-mode>
 Let it run to completion. It streams progress via its own logs; the skill
 only needs the final summary (`converted`, `skipped_unchanged`, `errors`).
 
-### 5. Update `lock.yaml`
+### 5. Update `manifest.yaml`
 
-At project root, read `lock.yaml` (create if missing with `{}`). Under
+At project root, read `manifest.yaml` (create if missing with `{}`). Under
 `docs.<name>`, write:
 
 ```yaml
 docs:
   <name>:
     source: <url>
-    version: <YYYY-MM-DD>          # today's UTC date
+    version: <YYYY-MM-DD> # today's UTC date
     count: <number of done entries in links.json>
     hash: "sha256:<hex>"
 ```
@@ -127,19 +127,19 @@ docs-to-markdown: <name>
   harvested: <N>
   converted: <M> (errors: <E>)
   output:    packages/docs/<name>/
-  lock:      lock.yaml updated (hash sha256:...)
+  manifest:  manifest.yaml updated (hash sha256:...)
 ```
 
 ## Error handling
 
-| Condition                          | Action                                                    |
-| ---------------------------------- | --------------------------------------------------------- |
-| Playwright MCP missing             | Stop. Suggest enabling the Playwright MCP server.         |
-| Harvester: nav not detected        | Stop. Ask user for `--nav-selector`. No partial writes.   |
-| Converter: many pages fail content | Ask for `--content-selector` and offer to rerun pending.  |
-| Single-page failures               | Continue; they land in `errors.json`. Surface the count.  |
-| `lock.yaml` write race             | Read-modify-write with a file lock (`flock` when present);|
-|                                    | on conflict, retry once then abort with a clear message.  |
+| Condition                          | Action                                                     |
+| ---------------------------------- | ---------------------------------------------------------- |
+| Playwright MCP missing             | Stop. Suggest enabling the Playwright MCP server.          |
+| Harvester: nav not detected        | Stop. Ask user for `--nav-selector`. No partial writes.    |
+| Converter: many pages fail content | Ask for `--content-selector` and offer to rerun pending.   |
+| Single-page failures               | Continue; they land in `errors.json`. Surface the count.   |
+| `manifest.yaml` write race         | Read-modify-write with a file lock (`flock` when present); |
+|                                    | on conflict, retry once then abort with a clear message.   |
 
 ## Notes
 
