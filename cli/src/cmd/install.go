@@ -42,13 +42,33 @@ func runInstall(cmd *cobra.Command) error {
 		return err
 	}
 
-	scope := scopeFromGlobal(flagGlobal)
-	docsReq := parseDocsFlag(cmd, src)
-	installed, err := doInstall(src, scope, flagTarget, docsReq)
+	manifest, err := loadManifestForSrc(src)
 	if err != nil {
 		return err
 	}
-	return recordInstall(src, scope, flagTarget, installed)
+
+	scope := scopeFromGlobal(flagGlobal)
+	docsReq := parseDocsFlag(cmd, src, manifest)
+	summary, err := doInstall(src, scope, flagTarget, docsReq, manifest)
+	if err != nil {
+		return err
+	}
+	return recordInstall(src, scope, flagTarget, summary)
+}
+
+// installSummary captures which items were installed and their manifest versions,
+// so the .lock can be updated with per-item version tracking.
+type installSummary struct {
+	agents map[string]string // name -> version
+	skills map[string]string
+	docs   map[string]string
+}
+
+// loadManifestForSrc resolves the clone dir that contains `src` (its parent,
+// since src = <clone_dir>/packages) and loads manifest.yaml from there.
+func loadManifestForSrc(src string) (*config.Manifest, error) {
+	cloneDir := filepath.Dir(src)
+	return config.LoadManifest(cloneDir)
 }
 
 // scopeFromGlobal maps the -g/--global bool flag to the internal scope string.
@@ -60,14 +80,18 @@ func scopeFromGlobal(global bool) string {
 }
 
 // parseDocsFlag translates the --docs flag into a list of doc names to install.
-// Returns nil when the flag was not set, meaning "no docs".
-func parseDocsFlag(cmd *cobra.Command, src string) []string {
+// Returns nil when the flag was not set, meaning "no docs". When --docs is set
+// with no value (or "*"), returns every doc declared in the manifest.
+func parseDocsFlag(cmd *cobra.Command, src string, manifest *config.Manifest) []string {
 	if !cmd.Flags().Changed("docs") {
 		return nil
 	}
 	if flagDocs == "*" || strings.TrimSpace(flagDocs) == "" {
-		// bare --docs → all available docs
-		return listDocs(filepath.Join(src, "docs"))
+		var out []string
+		for name := range manifest.Docs {
+			out = append(out, name)
+		}
+		return out
 	}
 	var out []string
 	for _, p := range strings.Split(flagDocs, ",") {
@@ -78,45 +102,55 @@ func parseDocsFlag(cmd *cobra.Command, src string) []string {
 	return out
 }
 
-// listDocs returns top-level directory names under the docs package root.
-func listDocs(docsSrc string) []string {
-	entries, err := os.ReadDir(docsSrc)
-	if err != nil {
-		return nil
+// doInstall copies agents, skills, and selected docs declared in the manifest.
+// Each installed item's manifest version is returned in the summary so the
+// caller can record it in .lock. Items not listed in the manifest are skipped
+// with a warning — the manifest is authoritative.
+func doInstall(src, scope, target string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
+	sum := &installSummary{
+		agents: map[string]string{},
+		skills: map[string]string{},
+		docs:   map[string]string{},
 	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			out = append(out, e.Name())
-		}
-	}
-	return out
-}
 
-// doInstall copies agents, skills, and selected docs into the scope's
-// destinations. Returns the subset of docs that were actually installed
-// (missing-in-source or already-installed are skipped).
-func doInstall(src, scope, target string, docsReq []string) ([]string, error) {
 	doClaude := target == "claude" || target == "all"
 	doOpencode := target == "opencode" || target == "all"
 
-	if doClaude {
-		if err := installGlob(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), "*.md"); err != nil {
-			return nil, err
+	for name, entry := range manifest.Agents {
+		if doClaude {
+			if ok, err := installAgentFile(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), name); err != nil {
+				return nil, err
+			} else if ok {
+				sum.agents[name] = entry.Version
+			}
 		}
-	}
-	if doOpencode {
-		if err := installGlob(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), "*.md"); err != nil {
-			return nil, err
+		if doOpencode {
+			if ok, err := installAgentFile(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), name); err != nil {
+				return nil, err
+			} else if ok {
+				sum.agents[name] = entry.Version
+			}
 		}
 	}
 
-	if err := installTree(filepath.Join(src, "skills"), skillsDir(scope)); err != nil {
-		return nil, err
+	for name, entry := range manifest.Skills {
+		skillSrc := filepath.Join(src, "skills", name)
+		if _, err := os.Stat(skillSrc); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skill %q not found in package source, skipping\n", name)
+			continue
+		}
+		if err := installTree(skillSrc, filepath.Join(skillsDir(scope), name)); err != nil {
+			return nil, err
+		}
+		sum.skills[name] = entry.Version
 	}
 
-	var installedDocs []string
 	for _, name := range docsReq {
+		entry, ok := manifest.Docs[name]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "warning: doc %q not declared in manifest, skipping\n", name)
+			continue
+		}
 		docSrc := filepath.Join(src, "docs", name)
 		if _, err := os.Stat(docSrc); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: doc %q not found in package source, skipping\n", name)
@@ -125,15 +159,37 @@ func doInstall(src, scope, target string, docsReq []string) ([]string, error) {
 		docDst := filepath.Join(docsDir(scope), name)
 		if _, err := os.Stat(docDst); err == nil {
 			fmt.Printf("docs: %s already installed, skipping\n", name)
-			installedDocs = append(installedDocs, name)
+			sum.docs[name] = entry.Version
 			continue
 		}
 		if err := installTree(docSrc, docDst); err != nil {
 			return nil, err
 		}
-		installedDocs = append(installedDocs, name)
+		sum.docs[name] = entry.Version
 	}
-	return installedDocs, nil
+	return sum, nil
+}
+
+// installAgentFile copies a single `<name>.md` agent file from src to dst.
+// Returns (false, nil) when the source file does not exist (that target
+// simply doesn't ship this agent).
+func installAgentFile(srcDir, dstDir, name string) (bool, error) {
+	srcPath := filepath.Join(srcDir, name+".md")
+	if _, err := os.Stat(srcPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", dstDir, err)
+	}
+	dstPath := filepath.Join(dstDir, name+".md")
+	if err := copyFile(srcPath, dstPath); err != nil {
+		return false, err
+	}
+	fmt.Printf("installed %s → %s\n", srcPath, dstPath)
+	return true, nil
 }
 
 // resolvePackagesSrc returns the root of `agents/ skills/ docs/` to install from.
@@ -157,9 +213,9 @@ func resolvePackagesSrc() (string, error) {
 	return "", fmt.Errorf("no package source found — run `aico init` first or pass --src")
 }
 
-// recordInstall updates ~/.aico/.lock with this install. New docs are merged
-// with any previously tracked docs for the same (path, scope) entry.
-func recordInstall(src, scope, target string, newDocs []string) error {
+// recordInstall updates ~/.aico/.lock with this install, merging per-item
+// version maps with the existing record for the same (path, scope).
+func recordInstall(src, scope, target string, sum *installSummary) error {
 	lock, err := config.LoadLock()
 	if err != nil {
 		return err
@@ -168,10 +224,10 @@ func recordInstall(src, scope, target string, newDocs []string) error {
 	installPath := scopeRoot(scope)
 	version := gitCommit(repoRoot(src))
 
-	var existing []string
+	var existing config.InstallRecord
 	for _, r := range lock.Installs {
 		if r.Path == installPath && r.Scope == scope {
-			existing = r.Docs
+			existing = r
 			break
 		}
 	}
@@ -180,7 +236,9 @@ func recordInstall(src, scope, target string, newDocs []string) error {
 		Path:    installPath,
 		Scope:   scope,
 		Target:  target,
-		Docs:    mergeDocs(existing, newDocs),
+		Agents:  mergeVersions(existing.Agents, sum.agents),
+		Skills:  mergeVersions(existing.Skills, sum.skills),
+		Docs:    mergeVersions(existing.Docs, sum.docs),
 		Version: version,
 	})
 	if err := config.SaveLock(lock); err != nil {
@@ -189,20 +247,19 @@ func recordInstall(src, scope, target string, newDocs []string) error {
 	return nil
 }
 
-func mergeDocs(a, b []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, s := range a {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
+// mergeVersions returns a new map with b overlaid on a (b wins on conflict).
+// Nil inputs are treated as empty. Returns nil if both are empty to keep the
+// YAML output clean.
+func mergeVersions(a, b map[string]string) map[string]string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
 	}
-	for _, s := range b {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
+	out := map[string]string{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
 	}
 	return out
 }
@@ -248,37 +305,6 @@ func gitCommit(dir string) string {
 }
 
 // ---------- copy primitives ----------
-
-func installGlob(src, dst, pattern string) error {
-	if _, err := os.Stat(src); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	entries, err := filepath.Glob(filepath.Join(src, pattern))
-	if err != nil {
-		return fmt.Errorf("glob %s: %w", src, err)
-	}
-	if len(entries) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dst, err)
-	}
-	for _, f := range entries {
-		info, err := os.Stat(f)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		dest := filepath.Join(dst, filepath.Base(f))
-		if err := copyFile(f, dest); err != nil {
-			return err
-		}
-		fmt.Printf("installed %s → %s\n", f, dest)
-	}
-	return nil
-}
 
 func installTree(src, dst string) error {
 	if _, err := os.Stat(src); err != nil {

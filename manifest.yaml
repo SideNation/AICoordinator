@@ -12,7 +12,7 @@ agents:
 
 skills:
   docs-to-markdown:
-    source: packages/skills/docs-to-markdown/SKILL.md
+    source: packages/skills/docs-to-markdown
     version: 2026-04-19
 
 docs:

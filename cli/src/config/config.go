@@ -24,25 +24,33 @@ type Rc struct {
 }
 
 // InstallRecord describes one install destination tracked in .lock.
+// Agents, Skills, and Docs map each installed item's name to the manifest
+// version it was installed from. Empty version means "installed before
+// manifest-based tracking existed."
 type InstallRecord struct {
-	Path    string   `yaml:"path"`              // absolute install directory (project root or user home)
-	Scope   string   `yaml:"scope"`             // "project" | "user"
-	Target  string   `yaml:"target"`            // "claude" | "opencode" | "all"
-	Docs    []string `yaml:"docs,omitempty"`    // names of installed docs (each is a subdir under packages/docs/)
-	Version string   `yaml:"version,omitempty"` // package repo commit hash at install time
+	Path    string            `yaml:"path"`              // absolute install directory (project root or user home)
+	Scope   string            `yaml:"scope"`             // "project" | "user"
+	Target  string            `yaml:"target"`            // "claude" | "opencode" | "all"
+	Agents  map[string]string `yaml:"agents,omitempty"`  // agent name -> manifest version
+	Skills  map[string]string `yaml:"skills,omitempty"`  // skill name -> manifest version
+	Docs    map[string]string `yaml:"docs,omitempty"`    // doc name -> manifest version
+	Version string            `yaml:"version,omitempty"` // package repo commit hash at install time
 }
 
-// UnmarshalYAML accepts the legacy `docs: true/false` bool form as well as the
-// current `docs: [name, ...]` list form. Legacy `true` is downgraded to an
-// empty list (treated as "docs were installed but names unknown"); `false`
-// becomes nil.
+// UnmarshalYAML accepts legacy forms of `docs`:
+//   - `docs: true/false` (ancient bool form)
+//   - `docs: [name, ...]` (list form)
+// and the current map form `docs: {name: version}`. Legacy entries are
+// migrated to the map with an empty version string.
 func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
-	type rawBool struct {
-		Path    string `yaml:"path"`
-		Scope   string `yaml:"scope"`
-		Target  string `yaml:"target"`
-		Docs    bool   `yaml:"docs"`
-		Version string `yaml:"version,omitempty"`
+	type rawMap struct {
+		Path    string            `yaml:"path"`
+		Scope   string            `yaml:"scope"`
+		Target  string            `yaml:"target"`
+		Agents  map[string]string `yaml:"agents,omitempty"`
+		Skills  map[string]string `yaml:"skills,omitempty"`
+		Docs    map[string]string `yaml:"docs,omitempty"`
+		Version string            `yaml:"version,omitempty"`
 	}
 	type rawList struct {
 		Path    string   `yaml:"path"`
@@ -51,10 +59,30 @@ func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
 		Docs    []string `yaml:"docs,omitempty"`
 		Version string   `yaml:"version,omitempty"`
 	}
+	type rawBool struct {
+		Path    string `yaml:"path"`
+		Scope   string `yaml:"scope"`
+		Target  string `yaml:"target"`
+		Docs    bool   `yaml:"docs"`
+		Version string `yaml:"version,omitempty"`
+	}
+
+	var m rawMap
+	if err := node.Decode(&m); err == nil {
+		r.Path, r.Scope, r.Target = m.Path, m.Scope, m.Target
+		r.Agents, r.Skills, r.Docs = m.Agents, m.Skills, m.Docs
+		r.Version = m.Version
+		return nil
+	}
 	var list rawList
 	if err := node.Decode(&list); err == nil {
-		r.Path, r.Scope, r.Target = list.Path, list.Scope, list.Target
-		r.Docs, r.Version = list.Docs, list.Version
+		r.Path, r.Scope, r.Target, r.Version = list.Path, list.Scope, list.Target, list.Version
+		if list.Docs != nil {
+			r.Docs = map[string]string{}
+			for _, name := range list.Docs {
+				r.Docs[name] = ""
+			}
+		}
 		return nil
 	}
 	var b rawBool
@@ -63,7 +91,7 @@ func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
 	}
 	r.Path, r.Scope, r.Target, r.Version = b.Path, b.Scope, b.Target, b.Version
 	if b.Docs {
-		r.Docs = []string{}
+		r.Docs = map[string]string{}
 	}
 	return nil
 }
@@ -237,4 +265,57 @@ func LoadDotenv(dir string) (map[string]string, error) {
 // `<clone_dir>/packages/`.
 func PackagesDir(cloneDir string) string {
 	return filepath.Join(cloneDir, "packages")
+}
+
+// ManifestEntry holds the declared version of a single agent/skill/doc.
+type ManifestEntry struct {
+	Version string `yaml:"version"`
+}
+
+// Manifest declares the authoritative version for each packaged item.
+// Lives at <clone_dir>/manifest.yaml and is edited by humans.
+type Manifest struct {
+	Agents map[string]ManifestEntry `yaml:"agents,omitempty"`
+	Skills map[string]ManifestEntry `yaml:"skills,omitempty"`
+	Docs   map[string]ManifestEntry `yaml:"docs,omitempty"`
+}
+
+// ManifestPath returns the expected path of the manifest file for a given
+// clone directory (the directory recorded as clone_dir in .aicorc).
+func ManifestPath(cloneDir string) string {
+	return filepath.Join(cloneDir, "manifest.yaml")
+}
+
+// LoadManifest reads <cloneDir>/manifest.yaml. Returns an error if the file
+// does not exist — manifest is required for install/update under the
+// version-tracking flow.
+func LoadManifest(cloneDir string) (*Manifest, error) {
+	p := ManifestPath(cloneDir)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("read manifest %s: %w", p, err)
+	}
+	var m Manifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse manifest %s: %w", p, err)
+	}
+	return &m, nil
+}
+
+// AgentVersion returns the declared version for an agent, or "" if missing.
+func (m *Manifest) AgentVersion(name string) (string, bool) {
+	e, ok := m.Agents[name]
+	return e.Version, ok
+}
+
+// SkillVersion returns the declared version for a skill, or "" if missing.
+func (m *Manifest) SkillVersion(name string) (string, bool) {
+	e, ok := m.Skills[name]
+	return e.Version, ok
+}
+
+// DocVersion returns the declared version for a doc, or "" if missing.
+func (m *Manifest) DocVersion(name string) (string, bool) {
+	e, ok := m.Docs[name]
+	return e.Version, ok
 }

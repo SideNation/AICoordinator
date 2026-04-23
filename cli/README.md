@@ -83,11 +83,13 @@ aico init
 생성되는 파일:
 ```
 <init 실행 폴더>/
-  <repo-name>/     # git clone된 패키지 저장소
-  .env             # (선택) PACKAGE_GIT_URL 저장
+  <repo-name>/            # git clone된 패키지 저장소
+    manifest.yaml         # 설치 대상과 버전을 선언 (수동 편집)
+    packages/             # agents/ skills/ docs/ 하위 디렉터리 포함
+  .env                    # (선택) PACKAGE_GIT_URL 저장
 ~/.aico/
-  .aicorc          # YAML: init_dir, clone_dir, git_url
-  .lock            # YAML: install 기록 (install 실행 시 생성)
+  .aicorc                 # YAML: init_dir, clone_dir, git_url
+  .lock                   # YAML: install 기록 (install 실행 시 생성)
 ```
 
 ---
@@ -107,22 +109,49 @@ aico init
 
 > skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
 
+### manifest.yaml — 설치 대상 선언
+
+`install`과 `update`는 모두 `<clone_dir>/manifest.yaml`을 **권위 있는 버전 기준**으로 사용합니다. manifest에 선언된 항목만 설치·추적되며, 각 항목의 `version`이 `.lock`에 기록됩니다.
+
+```yaml
+# <clone_dir>/manifest.yaml
+agents:
+  link-harvester:
+    version: 2026-04-19
+  markdown-converter:
+    version: 2026-04-19
+
+skills:
+  docs-to-markdown:
+    version: 2026-04-19
+
+docs:
+  onejs:
+    version: 2026-04-20
+  backnd-base:
+    version: 2026-04-19
+```
+
+- manifest에 없는 항목은 설치되지 않습니다 (경고 후 스킵).
+- manifest의 `version`을 바꾸면 다음 `aico update`가 해당 항목만 재설치합니다.
+- manifest가 없으면 `install`/`update`는 에러로 종료됩니다.
+
 ### 기본 설치 범위
 
 | 항목 | 기본 | 비고 |
 |---|---|---|
-| Claude agent | ✅ | `--target opencode` / `--target all`로 전환·확장 |
-| opencode agent | ❌ | `--target` 지정 필요 |
-| skills | ✅ | 항상 설치 |
-| docs | ❌ | `--docs` 플래그로 활성화 (이름 선택 가능) |
+| agents (Claude) | ✅ | manifest에 선언된 agent만. `--target opencode` / `--target all`로 대상 전환 |
+| agents (opencode) | ❌ | `--target` 지정 필요 |
+| skills | ✅ | manifest에 선언된 skill 전부 |
+| docs | ❌ | `--docs` 플래그로 활성화. manifest에 선언된 것 중 선택 설치 |
 
 ### `--docs` 동작
 
 - 플래그 없음 → docs 미설치
-- `--docs` (값 없음) → `packages/docs/` 아래 **모든** docs 설치
-- `--docs=이름1,이름2` → 지정한 docs만 설치 (쉼표 구분, 공백 허용)
-- **이미 설치된 docs는 자동 스킵**. 다시 내려받으려면 `aico update`를 사용하세요.
-- 설치된 docs 이름은 `~/.aico/.lock`에 기록되어 이후 `update`가 같은 목록으로 재설치합니다.
+- `--docs` (값 없음) → manifest에 선언된 **모든** docs 설치
+- `--docs=이름1,이름2` → 지정한 docs만 설치 (manifest에 선언되어 있어야 함)
+- **이미 설치된 docs는 자동 스킵**. 버전이 바뀌었다면 `aico update`를 사용하세요.
+- 설치된 docs 이름과 버전은 `~/.aico/.lock`에 기록됩니다.
 
 ```bash
 # 기본: project 스코프, Claude agent + skills
@@ -156,14 +185,17 @@ aico install -g --target all --docs
 
 ---
 
-## `aico update` — 최신 패키지로 갱신
+## `aico update` — manifest 버전과 동기화
 
 1. `.aicorc`의 `clone_dir`에서 `git pull --ff-only` (실패해도 계속 진행).
-2. `.lock`의 기록 중 조건에 맞는 설치 지점을 **현재 설치된 구성 그대로** 재설치.
-   - agent·skills는 항상 갱신.
-   - docs는 `.lock`에 기록된 이름 목록을 통째로 재설치(기존 디렉터리는 깨끗하게 교체).
+2. `<clone_dir>/manifest.yaml`을 로드 (없으면 에러).
+3. `.lock`에 추적된 각 설치 지점에 대해:
+   - **버전이 달라진 항목만 재설치** (skills/docs는 기존 디렉터리를 지우고 교체, agents는 `.md` 파일 덮어쓰기).
+   - 버전이 같으면 건너뜀.
+   - `.lock`에 있지만 manifest에서 사라진 항목은 **삭제 여부를 사용자에게 질문** (`y/N`).
+4. `.lock`의 각 항목 버전을 manifest 값으로 갱신.
 
-새 docs를 추가로 설치하려면 `aico install --docs=<이름>`을 사용하세요. `update`는 새 docs를 추가하지 않고, 이미 설치된 항목만 최신 상태로 맞춥니다.
+새 항목을 추가로 설치하려면 `aico install --docs=<이름>` 등을 사용하세요. `update`는 이미 설치된 항목만 동기화합니다.
 
 ```bash
 # 기본: 현재 폴더가 설치되어 있다면 현재 폴더만 업데이트
