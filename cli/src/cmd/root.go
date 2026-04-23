@@ -14,5 +14,5 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(agentCmd, installCmd)
+	rootCmd.AddCommand(installCmd)
 }
