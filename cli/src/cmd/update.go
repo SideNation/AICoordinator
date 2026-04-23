@@ -18,13 +18,13 @@ var updateCmd = &cobra.Command{
 }
 
 var (
-	flagUpdateAll  bool
-	flagUpdateUser bool
+	flagUpdateAll    bool
+	flagUpdateGlobal bool
 )
 
 func init() {
 	updateCmd.Flags().BoolVar(&flagUpdateAll, "all", false, "update every tracked install in .lock (prunes missing project dirs)")
-	updateCmd.Flags().BoolVar(&flagUpdateUser, "user", false, "update only the user-scope install")
+	updateCmd.Flags().BoolVarP(&flagUpdateGlobal, "global", "g", false, "update only the user-scope (home) install")
 	rootCmd.AddCommand(updateCmd)
 }
 
@@ -82,7 +82,7 @@ func pickUpdateRecords(lock *config.Lock, rc *config.Rc) []config.InstallRecord 
 		}
 		return lock.Installs
 	}
-	if flagUpdateUser {
+	if flagUpdateGlobal {
 		var out []config.InstallRecord
 		for _, r := range lock.Installs {
 			if r.Scope == "user" {

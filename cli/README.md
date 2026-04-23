@@ -139,17 +139,17 @@ aico install --docs=backnd-base,frontend-guide
 aico install --target all
 
 # 사용자 환경(~/.claude, ~/.config/opencode)에 docs 포함 설치
-aico install --scope user --docs
+aico install -g --docs
 
 # 사용자 환경에 전체 설치 (Claude + opencode + 모든 docs)
-aico install --scope user --target all --docs
+aico install -g --target all --docs
 ```
 
 ### install 플래그
 
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
-| `--scope` | `project` | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
+| `-g`, `--global` | `false` | 지정하면 홈 디렉터리(`~/.claude`, `~/.config/opencode`)에 설치. 생략 시 현재 프로젝트 디렉터리 |
 | `--target` | `claude` | agent 대상: `claude`, `opencode`, `all` |
 | `--docs` | (unset) | 지정하면 docs 설치. 값 없으면 전부, `a,b` 형식으로 선택 설치. 이미 설치된 것은 스킵 |
 | `--src` | (auto) | 패키지 소스 디렉터리 오버라이드. 기본은 `.aicorc`의 `clone_dir/packages` |
@@ -170,7 +170,7 @@ aico install --scope user --target all --docs
 aico update
 
 # 사용자 환경만 업데이트
-aico update --user
+aico update -g
 
 # .lock에 기록된 모든 설치를 업데이트 (존재하지 않는 project 폴더는 .lock에서 제거)
 aico update --all
@@ -181,7 +181,7 @@ aico update --all
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
 | `--all` | `false` | 추적 중인 모든 설치를 업데이트하고, 사라진 project 폴더는 `.lock`에서 제거 |
-| `--user` | `false` | user 스코프 설치만 업데이트 |
+| `-g`, `--global` | `false` | user 스코프(홈 디렉터리) 설치만 업데이트 |
 
 ---
 

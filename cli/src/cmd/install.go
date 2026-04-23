@@ -21,14 +21,14 @@ var installCmd = &cobra.Command{
 }
 
 var (
-	flagScope  string // "project" | "user"
+	flagGlobal bool   // true = user scope (home), false = project scope (cwd)
 	flagTarget string // "claude" | "opencode" | "all"
 	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
 	flagSrc    string // override packages source root
 )
 
 func init() {
-	installCmd.Flags().StringVar(&flagScope, "scope", "project", "install scope: project or user")
+	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.config/opencode) instead of current project")
 	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
 	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
 	// allow bare `--docs` (no value) to mean "all docs"
@@ -42,12 +42,21 @@ func runInstall(cmd *cobra.Command) error {
 		return err
 	}
 
+	scope := scopeFromGlobal(flagGlobal)
 	docsReq := parseDocsFlag(cmd, src)
-	installed, err := doInstall(src, flagScope, flagTarget, docsReq)
+	installed, err := doInstall(src, scope, flagTarget, docsReq)
 	if err != nil {
 		return err
 	}
-	return recordInstall(src, flagScope, flagTarget, installed)
+	return recordInstall(src, scope, flagTarget, installed)
+}
+
+// scopeFromGlobal maps the -g/--global bool flag to the internal scope string.
+func scopeFromGlobal(global bool) string {
+	if global {
+		return "user"
+	}
+	return "project"
 }
 
 // parseDocsFlag translates the --docs flag into a list of doc names to install.
