@@ -1,6 +1,6 @@
 # aico CLI
 
-단일 소스 에이전트 마크다운 파일을 **Claude Code**용과 **opencode**용 파일로 자동 분리·변환합니다.
+**Claude Code**와 **opencode** 환경에 agents, skills, docs를 설치·업데이트하는 패키지 관리 도구.
 
 ---
 
@@ -51,132 +51,6 @@ export PATH="$PATH:/path/to/AISkills/cli/bin"
 
 ---
 
-## 소스 포맷
-
-`agents/<name>.md` 파일에 단일 소스로 작성합니다.
-
-```markdown
----
-name: code-reviewer
-description: Reviews PRs for correctness and style
-model: sonnet            # alias 또는 anthropic/provider-id
-tools: [Read, Grep, Bash]
-color: blue              # 이름(blue/red/…) 또는 #hex
-useonly: both            # 생략·both·all = 양쪽, claude = Claude만, opencode = opencode만
-
-# Claude Code 전용 오버라이드
-claude:
-  permissionMode: acceptEdits
-  disallowedTools: [Write]
-  maxTurns: 20
-  effort: high
-
-# opencode 전용 오버라이드
-opencode:
-  mode: subagent
-  temperature: 0.2
-  steps: 40
-  permission:
-    edit: ask
-    bash: allow
----
-
-에이전트 본문을 여기에 작성합니다.
-```
-
-### 필수 필드
-
-| 필드 | 설명 |
-|---|---|
-| `name` | 에이전트 식별자 (파일명 권장) |
-| `description` | 에이전트 설명 |
-
-### 공유 필드 변환 규칙
-
-| 소스 | Claude 출력 | opencode 출력 |
-|---|---|---|
-| `model: sonnet` | `sonnet` | `anthropic/claude-sonnet-4-6` |
-| `model: opus` | `opus` | `anthropic/claude-opus-4-7` |
-| `model: haiku` | `haiku` | `anthropic/claude-haiku-4-5-20251001` |
-| `tools: [Read, Grep]` | `Read, Grep` (CSV) | `{read: true, grep: true}` (맵) |
-| `color: blue` | `blue` | `#3b82f6` |
-| `color: "#3b82f6"` | `blue` (역매핑) | `#3b82f6` |
-
----
-
-## 커맨드
-
-### `aico agent split` — 단일 파일 분리
-
-```bash
-aico agent split <source.md> [플래그]
-```
-
-`agents/<name>.md` 한 파일을 읽어 두 대상으로 씁니다.
-
-```bash
-# 기본 (--out-dir packages/agents 기준)
-aico agent split agents/code-reviewer.md
-
-# 출력 디렉터리 지정
-aico agent split agents/code-reviewer.md --out-dir packages/agents
-
-# 결과를 파일에 쓰지 않고 stdout에 출력
-aico agent split agents/code-reviewer.md --dry-run
-
-# 기존 파일 강제 덮어쓰기
-aico agent split agents/code-reviewer.md --force
-
-# Claude 파일만 생성
-aico agent split agents/code-reviewer.md --only claude
-
-# opencode 파일만 생성
-aico agent split agents/code-reviewer.md --only opencode
-
-# 매핑 불가 값 발견 시 경고 대신 실패
-aico agent split agents/code-reviewer.md --strict
-```
-
-### `aico agent build` — 전체 일괄 변환
-
-```bash
-aico agent build [플래그]
-```
-
-`agents/` 디렉터리 내 모든 `.md` 파일을 일괄 변환합니다. mtime을 비교해 변경된 파일만 재생성합니다.
-
-```bash
-# 기본
-aico agent build
-
-# 소스·출력 디렉터리 지정
-aico agent build --src agents --out-dir packages/agents
-
-# 모든 파일 강제 재생성
-aico agent build --force
-
-# useonly로 제외된 대상 파일이 남아 있으면 삭제
-aico agent build --prune
-
-# dry-run: 실제로 쓰지 않고 결과만 출력
-aico agent build --dry-run
-```
-
-### `aico agent validate` — 유효성 검사
-
-```bash
-aico agent validate <source.md>
-```
-
-파일을 읽어 필수 필드·허용값을 검사합니다. 파일을 쓰지 않습니다.
-
-```bash
-aico agent validate agents/code-reviewer.md
-# → 오류 없으면 exit 0, 오류 있으면 목록 출력 후 exit 1
-```
-
----
-
 ## `aico init` — 패키지 저장소 초기화
 
 원하는 폴더로 이동한 뒤 한 번 실행합니다. `PACKAGE_GIT_URL`을 읽어 **현재 폴더 안에** 패키지 저장소를 git clone하고 `~/.aico/.aicorc`에 경로를 기록합니다.
@@ -209,11 +83,13 @@ aico init
 생성되는 파일:
 ```
 <init 실행 폴더>/
-  <repo-name>/     # git clone된 패키지 저장소
-  .env             # (선택) PACKAGE_GIT_URL 저장
+  <repo-name>/            # git clone된 패키지 저장소
+    manifest.yaml         # 설치 대상과 버전을 선언 (수동 편집)
+    packages/             # agents/ skills/ docs/ 하위 디렉터리 포함
+  .env                    # (선택) PACKAGE_GIT_URL 저장
 ~/.aico/
-  .aicorc          # YAML: init_dir, clone_dir, git_url
-  .lock            # YAML: install 기록 (install 실행 시 생성)
+  .aicorc                 # YAML: init_dir, clone_dir, git_url
+  .lock                   # YAML: install 기록 (install 실행 시 생성)
 ```
 
 ---
@@ -233,22 +109,49 @@ aico init
 
 > skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
 
+### manifest.yaml — 설치 대상 선언
+
+`install`과 `update`는 모두 `<clone_dir>/manifest.yaml`을 **권위 있는 버전 기준**으로 사용합니다. manifest에 선언된 항목만 설치·추적되며, 각 항목의 `version`이 `.lock`에 기록됩니다.
+
+```yaml
+# <clone_dir>/manifest.yaml
+agents:
+  link-harvester:
+    version: 2026-04-19
+  markdown-converter:
+    version: 2026-04-19
+
+skills:
+  docs-to-markdown:
+    version: 2026-04-19
+
+docs:
+  onejs:
+    version: 2026-04-20
+  backnd-base:
+    version: 2026-04-19
+```
+
+- manifest에 없는 항목은 설치되지 않습니다 (경고 후 스킵).
+- manifest의 `version`을 바꾸면 다음 `aico update`가 해당 항목만 재설치합니다.
+- manifest가 없으면 `install`/`update`는 에러로 종료됩니다.
+
 ### 기본 설치 범위
 
 | 항목 | 기본 | 비고 |
 |---|---|---|
-| Claude agent | ✅ | `--target opencode` / `--target all`로 전환·확장 |
-| opencode agent | ❌ | `--target` 지정 필요 |
-| skills | ✅ | 항상 설치 |
-| docs | ❌ | `--docs` 플래그로 활성화 (이름 선택 가능) |
+| agents (Claude) | ✅ | manifest에 선언된 agent만. `--target opencode` / `--target all`로 대상 전환 |
+| agents (opencode) | ❌ | `--target` 지정 필요 |
+| skills | ✅ | manifest에 선언된 skill 전부 |
+| docs | ❌ | `--docs` 플래그로 활성화. manifest에 선언된 것 중 선택 설치 |
 
 ### `--docs` 동작
 
 - 플래그 없음 → docs 미설치
-- `--docs` (값 없음) → `packages/docs/` 아래 **모든** docs 설치
-- `--docs=이름1,이름2` → 지정한 docs만 설치 (쉼표 구분, 공백 허용)
-- **이미 설치된 docs는 자동 스킵**. 다시 내려받으려면 `aico update`를 사용하세요.
-- 설치된 docs 이름은 `~/.aico/.lock`에 기록되어 이후 `update`가 같은 목록으로 재설치합니다.
+- `--docs` (값 없음) → manifest에 선언된 **모든** docs 설치
+- `--docs=이름1,이름2` → 지정한 docs만 설치 (manifest에 선언되어 있어야 함)
+- **이미 설치된 docs는 자동 스킵**. 버전이 바뀌었다면 `aico update`를 사용하세요.
+- 설치된 docs 이름과 버전은 `~/.aico/.lock`에 기록됩니다.
 
 ```bash
 # 기본: project 스코프, Claude agent + skills
@@ -265,38 +168,41 @@ aico install --docs=backnd-base,frontend-guide
 aico install --target all
 
 # 사용자 환경(~/.claude, ~/.config/opencode)에 docs 포함 설치
-aico install --scope user --docs
+aico install -g --docs
 
 # 사용자 환경에 전체 설치 (Claude + opencode + 모든 docs)
-aico install --scope user --target all --docs
+aico install -g --target all --docs
 ```
 
 ### install 플래그
 
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
-| `--scope` | `project` | `project` = 현재 디렉터리, `user` = 홈 디렉터리 |
+| `-g`, `--global` | `false` | 지정하면 홈 디렉터리(`~/.claude`, `~/.config/opencode`)에 설치. 생략 시 현재 프로젝트 디렉터리 |
 | `--target` | `claude` | agent 대상: `claude`, `opencode`, `all` |
 | `--docs` | (unset) | 지정하면 docs 설치. 값 없으면 전부, `a,b` 형식으로 선택 설치. 이미 설치된 것은 스킵 |
 | `--src` | (auto) | 패키지 소스 디렉터리 오버라이드. 기본은 `.aicorc`의 `clone_dir/packages` |
 
 ---
 
-## `aico update` — 최신 패키지로 갱신
+## `aico update` — manifest 버전과 동기화
 
 1. `.aicorc`의 `clone_dir`에서 `git pull --ff-only` (실패해도 계속 진행).
-2. `.lock`의 기록 중 조건에 맞는 설치 지점을 **현재 설치된 구성 그대로** 재설치.
-   - agent·skills는 항상 갱신.
-   - docs는 `.lock`에 기록된 이름 목록을 통째로 재설치(기존 디렉터리는 깨끗하게 교체).
+2. `<clone_dir>/manifest.yaml`을 로드 (없으면 에러).
+3. `.lock`에 추적된 각 설치 지점에 대해:
+   - **버전이 달라진 항목만 재설치** (skills/docs는 기존 디렉터리를 지우고 교체, agents는 `.md` 파일 덮어쓰기).
+   - 버전이 같으면 건너뜀.
+   - `.lock`에 있지만 manifest에서 사라진 항목은 **삭제 여부를 사용자에게 질문** (`y/N`).
+4. `.lock`의 각 항목 버전을 manifest 값으로 갱신.
 
-새 docs를 추가로 설치하려면 `aico install --docs=<이름>`을 사용하세요. `update`는 새 docs를 추가하지 않고, 이미 설치된 항목만 최신 상태로 맞춥니다.
+새 항목을 추가로 설치하려면 `aico install --docs=<이름>` 등을 사용하세요. `update`는 이미 설치된 항목만 동기화합니다.
 
 ```bash
 # 기본: 현재 폴더가 설치되어 있다면 현재 폴더만 업데이트
 aico update
 
 # 사용자 환경만 업데이트
-aico update --user
+aico update -g
 
 # .lock에 기록된 모든 설치를 업데이트 (존재하지 않는 project 폴더는 .lock에서 제거)
 aico update --all
@@ -307,43 +213,119 @@ aico update --all
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
 | `--all` | `false` | 추적 중인 모든 설치를 업데이트하고, 사라진 project 폴더는 `.lock`에서 제거 |
-| `--user` | `false` | user 스코프 설치만 업데이트 |
+| `-g`, `--global` | `false` | user 스코프(홈 디렉터리) 설치만 업데이트 |
 
 ---
 
-### agent 플래그 요약
+## `aico list` — 설치 상태 조회
+
+`.lock`에 추적 중인 설치 항목, manifest와의 비교, 설치 가능한 항목을 보여줍니다. 별칭 `aico ls`도 사용할 수 있습니다.
+
+```bash
+# 현재 폴더(또는 -g 시 홈)에 설치된 항목 표시
+aico list
+aico list -g
+
+# .lock에 기록된 모든 설치 위치 표시
+aico list -a
+
+# manifest에 있지만 아직 설치하지 않은 항목 (설치 가능 목록)
+aico list -v
+
+# manifest 전체 + 설치 상태 표시 (✓ 설치됨, ○ 미설치)
+aico list -m
+
+# 홈 디렉터리 기준으로 비교
+aico list -gv
+aico list -gm
+```
+
+### 출력 예
+
+**`aico list`**
+```
+Install: /Users/me/myproject (scope=project, target=claude)
+
+Agents:
+  link-harvester      2026-04-19
+  markdown-converter  2026-04-19
+
+Skills:
+  docs-to-markdown    2026-04-19
+
+Docs:
+  onejs               2026-04-20
+```
+
+**`aico list -m`** — ✓ 설치됨 / ○ 미설치 + 업데이트 가능 표시
+```
+Agents:
+  ✓ link-harvester       2026-04-19  up to date
+  ✓ markdown-converter   2026-04-19  installed 2026-04-18 → update available
+  ○ code-reviewer        2026-04-22  not installed
+```
+
+**`aico list -v`**
+```
+Available to install (declared in manifest, not yet installed):
+Agents:
+  code-reviewer        2026-04-22
+
+Docs:
+  backnd-base          2026-04-19
+```
+
+### list 플래그
+
+| 플래그 | 단축 | 설명 |
+|---|---|---|
+| `--global` | `-g` | user 스코프(홈 디렉터리) 기준 |
+| `--all` | `-a` | `.lock`의 모든 설치 표시 (cwd 무시) |
+| `--available` | `-v` | manifest에 있지만 미설치인 항목 |
+| `--manifest` | `-m` | manifest 전체 + 설치 상태 |
+
+`-v`와 `-m`은 같이 쓸 수 없습니다.
+
+---
+
+## `aico rm` — 설치된 항목 삭제
+
+`.lock`에 추적 중인 항목을 디스크와 `.lock`에서 함께 제거합니다. 패턴은 정확한 이름 또는 glob(`*`, `?`, `[abc]`)을 지원합니다.
+
+```bash
+# 자동 탐색: 이름이 일치하는 모든 종류(agent/skill/doc)에서 삭제
+aico rm link-harvester
+aico rm onejs
+
+# 종류 지정 (동명 충돌 방지)
+aico rm agent link-harvester
+aico rm skill docs-to-markdown
+aico rm doc onejs
+
+# 와일드카드
+aico rm 'link-*'              # link-* 와 일치하는 모든 항목
+aico rm doc '*'               # 모든 doc 삭제
+aico rm 'docs-*' 'react-*'    # 여러 패턴 동시
+
+# 여러 항목 한 번에
+aico rm onejs backnd-base
+aico rm doc onejs backnd-base
+
+# 사용자 환경(홈 디렉터리)에서 삭제
+aico rm -g skill docs-to-markdown
+```
+
+### rm 동작
+- **첫 인자**가 `agent` / `skill` / `doc` 이면 종류 필터로 사용. 그 외에는 모두 패턴.
+- agent의 경우 `.lock`에 기록된 `target`에 따라 claude/opencode 양쪽의 `.md` 파일을 함께 삭제합니다.
+- 매칭되는 항목이 없으면 경고만 표시하고 종료(에러 X).
+- 디스크에 이미 없는 파일은 무시하고 `.lock`만 정리합니다.
+
+### rm 플래그
 
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
-| `--out-dir` | `packages/agents` | 출력 루트 디렉터리 |
-| `--src` | `agents` | `build` 시 소스 디렉터리 |
-| `--dry-run` | `false` | 파일을 쓰지 않고 stdout에 렌더 결과 출력 |
-| `--force` | `false` | mtime 비교 없이 강제 덮어쓰기 |
-| `--strict` | `false` | 매핑 불가 값 발견 시 실패 (기본은 경고 후 드롭) |
-| `--prune` | `false` | useonly 제외 대상의 기존 출력 파일 삭제 |
-| `--only` | `""` | `claude` 또는 `opencode` 로 대상 강제 지정 |
-
----
-
-## 종료 코드
-
-| 코드 | 의미 |
-|---|---|
-| `0` | 성공 |
-| `1` | 검증 실패 (필드 오류, useonly 오류 등) |
-| `2` | IO 오류 |
-| `3` | 매핑 실패 (`--strict` 모드) |
-
----
-
-## 테스트
-
-```bash
-cd cli
-go test ./src/agent/...
-```
-
-`cli/test/fixtures/` 아래 샘플 파일을 기반으로 53개 테스트가 실행됩니다.
+| `-g`, `--global` | `false` | user 스코프(홈 디렉터리)에서 삭제 |
 
 ---
 
@@ -360,28 +342,13 @@ cli/
 │   ├── main.go
 │   ├── cmd/
 │   │   ├── root.go
-│   │   ├── agent.go            # split / build / validate 서브커맨드
-│   │   ├── install.go          # install 커맨드
 │   │   ├── init.go             # init 커맨드 (.env 로드, git clone, .aicorc 저장)
-│   │   └── update.go           # update 커맨드 (git pull + 재설치)
-│   ├── config/
-│   │   └── config.go           # ~/.aico/.aicorc, .lock 로드·저장
-│   ├── agent/
-│   │   ├── model.go            # Source, ClaudeOut, OpencodeOut 구조체
-│   │   ├── parser.go           # 프론트매터 파싱, 유효성 검사
-│   │   ├── mapping.go          # 모델·색상 매핑 로더
-│   │   ├── transform_claude.go
-│   │   ├── transform_opencode.go
-│   │   └── writer.go           # YAML 렌더링, 파일 쓰기
-│   └── mapping/
-│       ├── models.yaml         # alias ↔ provider/model-id
-│       └── colors.yaml         # 색상 이름 ↔ hex
-├── test/
-│   └── fixtures/               # 테스트용 샘플 마크다운
-├── docs/
-│   ├── prd_v1.md               # 제품 개발 계획서 v1
-│   ├── prd_v2.md               # 제품 개발 계획서 v2 (install 커맨드)
-│   └── prd_v3.md               # 제품 개발 계획서 v3 (init / update / .lock)
+│   │   ├── install.go          # install 커맨드
+│   │   ├── update.go           # update 커맨드 (manifest 기반 동기화)
+│   │   ├── list.go             # list 커맨드 (설치 현황/manifest 비교)
+│   │   └── rm.go               # rm 커맨드 (glob/자동 탐색 삭제)
+│   └── config/
+│       └── config.go           # ~/.aico/.aicorc, .lock 로드·저장
 ├── build.sh                    # 멀티 플랫폼 빌드 스크립트
 ├── go.mod
 └── go.sum
