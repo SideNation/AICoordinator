@@ -217,6 +217,77 @@ aico update --all
 
 ---
 
+## `aico list` — 설치 상태 조회
+
+`.lock`에 추적 중인 설치 항목, manifest와의 비교, 설치 가능한 항목을 보여줍니다. 별칭 `aico ls`도 사용할 수 있습니다.
+
+```bash
+# 현재 폴더(또는 -g 시 홈)에 설치된 항목 표시
+aico list
+aico list -g
+
+# .lock에 기록된 모든 설치 위치 표시
+aico list -a
+
+# manifest에 있지만 아직 설치하지 않은 항목 (설치 가능 목록)
+aico list -v
+
+# manifest 전체 + 설치 상태 표시 (✓ 설치됨, ○ 미설치)
+aico list -m
+
+# 홈 디렉터리 기준으로 비교
+aico list -gv
+aico list -gm
+```
+
+### 출력 예
+
+**`aico list`**
+```
+Install: /Users/me/myproject (scope=project, target=claude)
+
+Agents:
+  link-harvester      2026-04-19
+  markdown-converter  2026-04-19
+
+Skills:
+  docs-to-markdown    2026-04-19
+
+Docs:
+  onejs               2026-04-20
+```
+
+**`aico list -m`** — ✓ 설치됨 / ○ 미설치 + 업데이트 가능 표시
+```
+Agents:
+  ✓ link-harvester       2026-04-19  up to date
+  ✓ markdown-converter   2026-04-19  installed 2026-04-18 → update available
+  ○ code-reviewer        2026-04-22  not installed
+```
+
+**`aico list -v`**
+```
+Available to install (declared in manifest, not yet installed):
+Agents:
+  code-reviewer        2026-04-22
+
+Docs:
+  backnd-base          2026-04-19
+```
+
+### list 플래그
+
+| 플래그 | 단축 | 설명 |
+|---|---|---|
+| `--global` | `-g` | user 스코프(홈 디렉터리) 기준 |
+| `--all` | `-a` | `.lock`의 모든 설치 표시 (cwd 무시) |
+| `--available` | `-v` | manifest에 있지만 미설치인 항목 |
+| `--manifest` | `-m` | manifest 전체 + 설치 상태 |
+
+`-v`와 `-m`은 같이 쓸 수 없습니다.
+
+---
+
 ## `aico rm` — 설치된 항목 삭제
 
 `.lock`에 추적 중인 항목을 디스크와 `.lock`에서 함께 제거합니다. 패턴은 정확한 이름 또는 glob(`*`, `?`, `[abc]`)을 지원합니다.
@@ -274,6 +345,7 @@ cli/
 │   │   ├── init.go             # init 커맨드 (.env 로드, git clone, .aicorc 저장)
 │   │   ├── install.go          # install 커맨드
 │   │   ├── update.go           # update 커맨드 (manifest 기반 동기화)
+│   │   ├── list.go             # list 커맨드 (설치 현황/manifest 비교)
 │   │   └── rm.go               # rm 커맨드 (glob/자동 탐색 삭제)
 │   └── config/
 │       └── config.go           # ~/.aico/.aicorc, .lock 로드·저장
