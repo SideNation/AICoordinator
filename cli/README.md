@@ -217,6 +217,47 @@ aico update --all
 
 ---
 
+## `aico rm` — 설치된 항목 삭제
+
+`.lock`에 추적 중인 항목을 디스크와 `.lock`에서 함께 제거합니다. 패턴은 정확한 이름 또는 glob(`*`, `?`, `[abc]`)을 지원합니다.
+
+```bash
+# 자동 탐색: 이름이 일치하는 모든 종류(agent/skill/doc)에서 삭제
+aico rm link-harvester
+aico rm onejs
+
+# 종류 지정 (동명 충돌 방지)
+aico rm agent link-harvester
+aico rm skill docs-to-markdown
+aico rm doc onejs
+
+# 와일드카드
+aico rm 'link-*'              # link-* 와 일치하는 모든 항목
+aico rm doc '*'               # 모든 doc 삭제
+aico rm 'docs-*' 'react-*'    # 여러 패턴 동시
+
+# 여러 항목 한 번에
+aico rm onejs backnd-base
+aico rm doc onejs backnd-base
+
+# 사용자 환경(홈 디렉터리)에서 삭제
+aico rm -g skill docs-to-markdown
+```
+
+### rm 동작
+- **첫 인자**가 `agent` / `skill` / `doc` 이면 종류 필터로 사용. 그 외에는 모두 패턴.
+- agent의 경우 `.lock`에 기록된 `target`에 따라 claude/opencode 양쪽의 `.md` 파일을 함께 삭제합니다.
+- 매칭되는 항목이 없으면 경고만 표시하고 종료(에러 X).
+- 디스크에 이미 없는 파일은 무시하고 `.lock`만 정리합니다.
+
+### rm 플래그
+
+| 플래그 | 기본값 | 설명 |
+|---|---|---|
+| `-g`, `--global` | `false` | user 스코프(홈 디렉터리)에서 삭제 |
+
+---
+
 ## 디렉터리 구조
 
 ```
@@ -230,9 +271,10 @@ cli/
 │   ├── main.go
 │   ├── cmd/
 │   │   ├── root.go
-│   │   ├── install.go          # install 커맨드
 │   │   ├── init.go             # init 커맨드 (.env 로드, git clone, .aicorc 저장)
-│   │   └── update.go           # update 커맨드 (git pull + 재설치)
+│   │   ├── install.go          # install 커맨드
+│   │   ├── update.go           # update 커맨드 (manifest 기반 동기화)
+│   │   └── rm.go               # rm 커맨드 (glob/자동 탐색 삭제)
 │   └── config/
 │       └── config.go           # ~/.aico/.aicorc, .lock 로드·저장
 ├── build.sh                    # 멀티 플랫폼 빌드 스크립트
