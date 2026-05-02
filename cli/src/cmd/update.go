@@ -213,9 +213,41 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		newDocs[name] = declared
 	}
 
+	// ----- rules -----
+	newRules := map[string]string{}
+	for name, locked := range rec.Rules {
+		declared, ok := manifest.RuleVersion(name)
+		if !ok {
+			if confirmRemoval("rule", name, rec.Scope) {
+				target := filepath.Join(rulesDir(rec.Scope), name+".md")
+				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+					return rec, fmt.Errorf("remove %s: %w", target, err)
+				}
+				continue
+			}
+			newRules[name] = locked
+			continue
+		}
+		if declared == locked {
+			newRules[name] = locked
+			continue
+		}
+		fmt.Printf("  rules/%s: %s → %s\n", name, displayVersion(locked), declared)
+		ruleSrc := filepath.Join(src, "rules", name+".md")
+		dstDir := rulesDir(rec.Scope)
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			return rec, fmt.Errorf("mkdir %s: %w", dstDir, err)
+		}
+		if err := copyFile(ruleSrc, filepath.Join(dstDir, name+".md")); err != nil {
+			return rec, err
+		}
+		newRules[name] = declared
+	}
+
 	rec.Agents = nilIfEmpty(newAgents)
 	rec.Skills = nilIfEmpty(newSkills)
 	rec.Docs = nilIfEmpty(newDocs)
+	rec.Rules = nilIfEmpty(newRules)
 	return rec, nil
 }
 

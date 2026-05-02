@@ -71,8 +71,9 @@ func listInstalled(lock *config.Lock) error {
 	printSection("Agents", rec.Agents, "")
 	printSection("Skills", rec.Skills, "")
 	printSection("Docs", rec.Docs, "")
+	printSection("Rules", rec.Rules, "")
 
-	if len(rec.Agents)+len(rec.Skills)+len(rec.Docs) == 0 {
+	if len(rec.Agents)+len(rec.Skills)+len(rec.Docs)+len(rec.Rules) == 0 {
 		fmt.Println("  (no items)")
 	}
 	return nil
@@ -89,6 +90,7 @@ func listAllRecords(lock *config.Lock) error {
 		printSection("Agents", rec.Agents, "  ")
 		printSection("Skills", rec.Skills, "  ")
 		printSection("Docs", rec.Docs, "  ")
+		printSection("Rules", rec.Rules, "  ")
 		fmt.Println()
 	}
 	return nil
@@ -125,16 +127,16 @@ func listVsManifest(lock *config.Lock) error {
 // installedView extracts the per-kind installed maps from a record (which may
 // be nil) so callers can do membership/version lookups without nil checks.
 func installedView(rec *config.InstallRecord) struct {
-	agents, skills, docs map[string]string
+	agents, skills, docs, rules map[string]string
 } {
 	if rec == nil {
 		return struct {
-			agents, skills, docs map[string]string
+			agents, skills, docs, rules map[string]string
 		}{}
 	}
 	return struct {
-		agents, skills, docs map[string]string
-	}{rec.Agents, rec.Skills, rec.Docs}
+		agents, skills, docs, rules map[string]string
+	}{rec.Agents, rec.Skills, rec.Docs, rec.Rules}
 }
 
 func findInstall(lock *config.Lock, scope string) *config.InstallRecord {
@@ -168,7 +170,7 @@ func printSection(title string, m map[string]string, indent string) {
 
 // printAvailable lists manifest entries not present in the installed maps.
 func printAvailable(manifest *config.Manifest, installed struct {
-	agents, skills, docs map[string]string
+	agents, skills, docs, rules map[string]string
 }) {
 	avail := func(title string, declared map[string]config.ManifestEntry, have map[string]string) {
 		var names []string
@@ -193,12 +195,13 @@ func printAvailable(manifest *config.Manifest, installed struct {
 	avail("Agents", manifest.Agents, installed.agents)
 	avail("Skills", manifest.Skills, installed.skills)
 	avail("Docs", manifest.Docs, installed.docs)
+	avail("Rules", manifest.Rules, installed.rules)
 }
 
 // printManifestWithStatus prints every manifest entry annotated with install
 // status: ✓ installed (with version delta), ○ not installed.
 func printManifestWithStatus(manifest *config.Manifest, installed struct {
-	agents, skills, docs map[string]string
+	agents, skills, docs, rules map[string]string
 }) {
 	section := func(title string, declared map[string]config.ManifestEntry, have map[string]string) {
 		if len(declared) == 0 {
@@ -235,6 +238,7 @@ func printManifestWithStatus(manifest *config.Manifest, installed struct {
 	section("Agents", manifest.Agents, installed.agents)
 	section("Skills", manifest.Skills, installed.skills)
 	section("Docs", manifest.Docs, installed.docs)
+	section("Rules", manifest.Rules, installed.rules)
 }
 
 func sortedKeys(m map[string]string) []string {

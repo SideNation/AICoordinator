@@ -11,8 +11,8 @@ import (
 )
 
 var rmCmd = &cobra.Command{
-	Use:   "rm [agent|skill|doc] <pattern>...",
-	Short: "Remove installed agents, skills, or docs (supports globs and auto-discovery)",
+	Use:   "rm [agent|skill|doc|rule] <pattern>...",
+	Short: "Remove installed agents, skills, docs, or rules (supports globs and auto-discovery)",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRm(args)
@@ -76,16 +76,17 @@ func runRm(args []string) error {
 	rec.Agents = nilIfEmpty(rec.Agents)
 	rec.Skills = nilIfEmpty(rec.Skills)
 	rec.Docs = nilIfEmpty(rec.Docs)
+	rec.Rules = nilIfEmpty(rec.Rules)
 
 	return config.SaveLock(lock)
 }
 
 // parseRmArgs splits args into (kind, patterns). When the first arg is
-// exactly "agent"/"skill"/"doc", it becomes the kind filter; otherwise kind
-// is "" (auto-discovery across all kinds).
+// exactly "agent"/"skill"/"doc"/"rule", it becomes the kind filter; otherwise
+// kind is "" (auto-discovery across all kinds).
 func parseRmArgs(args []string) (string, []string) {
 	switch args[0] {
-	case "agent", "skill", "doc":
+	case "agent", "skill", "doc", "rule":
 		return args[0], args[1:]
 	}
 	return "", args
@@ -138,6 +139,9 @@ func collectMatches(rec *config.InstallRecord, kind string, patterns []string) [
 	if kind == "" || kind == "doc" {
 		add("doc", rec.Docs)
 	}
+	if kind == "" || kind == "rule" {
+		add("rule", rec.Rules)
+	}
 
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].kind != out[j].kind {
@@ -185,6 +189,8 @@ func itemMap(rec *config.InstallRecord, kind string) map[string]string {
 		return rec.Skills
 	case "doc":
 		return rec.Docs
+	case "rule":
+		return rec.Rules
 	}
 	return nil
 }
@@ -210,6 +216,8 @@ func removeItem(rec *config.InstallRecord, kind, name string) error {
 		return removeIfExists(filepath.Join(skillsDir(rec.Scope), name))
 	case "doc":
 		return removeIfExists(filepath.Join(docsDir(rec.Scope), name))
+	case "rule":
+		return removeIfExists(filepath.Join(rulesDir(rec.Scope), name+".md"))
 	}
 	return nil
 }
