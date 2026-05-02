@@ -24,7 +24,6 @@ var (
 	flagGlobal bool   // true = user scope (home), false = project scope (cwd)
 	flagTarget string // "claude" | "opencode" | "all"
 	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
-	flagRules  string // "" = none, "*" = all, "a,b,c" = selected
 	flagSrc    string // override packages source root
 )
 
@@ -32,10 +31,8 @@ func init() {
 	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.config/opencode) instead of current project")
 	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
 	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
-	installCmd.Flags().StringVar(&flagRules, "rules", "", "install rules: comma-separated names, or empty (= all when flag present, skip when absent)")
-	// allow bare `--docs` / `--rules` (no value) to mean "all"
+	// allow bare `--docs` (no value) to mean "all docs"
 	installCmd.Flags().Lookup("docs").NoOptDefVal = "*"
-	installCmd.Flags().Lookup("rules").NoOptDefVal = "*"
 	installCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
 
@@ -52,8 +49,7 @@ func runInstall(cmd *cobra.Command) error {
 
 	scope := scopeFromGlobal(flagGlobal)
 	docsReq := parseSelectFlag(cmd, "docs", flagDocs, manifestDocsNames(manifest))
-	rulesReq := parseSelectFlag(cmd, "rules", flagRules, manifestRulesNames(manifest))
-	summary, err := doInstall(src, scope, flagTarget, docsReq, rulesReq, manifest)
+	summary, err := doInstall(src, scope, flagTarget, docsReq, manifest)
 	if err != nil {
 		return err
 	}
@@ -113,19 +109,14 @@ func manifestDocsNames(m *config.Manifest) []string {
 	return out
 }
 
-func manifestRulesNames(m *config.Manifest) []string {
-	out := make([]string, 0, len(m.Rules))
-	for n := range m.Rules {
-		out = append(out, n)
-	}
-	return out
-}
-
-// doInstall copies agents, skills, and selected docs/rules declared in the
+// doInstall copies agents, skills, rules, and selected docs declared in the
 // manifest. Each installed item's manifest version is returned in the summary
 // so the caller can record it in .lock. Items not listed in the manifest are
 // skipped with a warning — the manifest is authoritative.
-func doInstall(src, scope, target string, docsReq, rulesReq []string, manifest *config.Manifest) (*installSummary, error) {
+//
+// Agents, skills, and rules are always installed (every entry in the
+// manifest); docs require an explicit selection via docsReq.
+func doInstall(src, scope, target string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
 	sum := &installSummary{
 		agents: map[string]string{},
 		skills: map[string]string{},
@@ -188,12 +179,7 @@ func doInstall(src, scope, target string, docsReq, rulesReq []string, manifest *
 		sum.docs[name] = entry.Version
 	}
 
-	for _, name := range rulesReq {
-		entry, ok := manifest.Rules[name]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "warning: rule %q not declared in manifest, skipping\n", name)
-			continue
-		}
+	for name, entry := range manifest.Rules {
 		ruleSrc := filepath.Join(src, "rules", name+".md")
 		if _, err := os.Stat(ruleSrc); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: rule %q not found in package source, skipping\n", name)
