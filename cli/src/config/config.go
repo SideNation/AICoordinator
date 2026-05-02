@@ -24,9 +24,9 @@ type Rc struct {
 }
 
 // InstallRecord describes one install destination tracked in .lock.
-// Agents, Skills, and Docs map each installed item's name to the manifest
-// version it was installed from. Empty version means "installed before
-// manifest-based tracking existed."
+// Agents, Skills, Docs, and Rules map each installed item's name to the
+// manifest version it was installed from. Empty version means "installed
+// before manifest-based tracking existed."
 type InstallRecord struct {
 	Path    string            `yaml:"path"`              // absolute install directory (project root or user home)
 	Scope   string            `yaml:"scope"`             // "project" | "user"
@@ -34,6 +34,7 @@ type InstallRecord struct {
 	Agents  map[string]string `yaml:"agents,omitempty"`  // agent name -> manifest version
 	Skills  map[string]string `yaml:"skills,omitempty"`  // skill name -> manifest version
 	Docs    map[string]string `yaml:"docs,omitempty"`    // doc name -> manifest version
+	Rules   map[string]string `yaml:"rules,omitempty"`   // rule name -> manifest version
 	Version string            `yaml:"version,omitempty"` // package repo commit hash at install time
 }
 
@@ -50,6 +51,7 @@ func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
 		Agents  map[string]string `yaml:"agents,omitempty"`
 		Skills  map[string]string `yaml:"skills,omitempty"`
 		Docs    map[string]string `yaml:"docs,omitempty"`
+		Rules   map[string]string `yaml:"rules,omitempty"`
 		Version string            `yaml:"version,omitempty"`
 	}
 	type rawList struct {
@@ -70,7 +72,7 @@ func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
 	var m rawMap
 	if err := node.Decode(&m); err == nil {
 		r.Path, r.Scope, r.Target = m.Path, m.Scope, m.Target
-		r.Agents, r.Skills, r.Docs = m.Agents, m.Skills, m.Docs
+		r.Agents, r.Skills, r.Docs, r.Rules = m.Agents, m.Skills, m.Docs, m.Rules
 		r.Version = m.Version
 		return nil
 	}
@@ -278,6 +280,7 @@ type Manifest struct {
 	Agents map[string]ManifestEntry `yaml:"agents,omitempty"`
 	Skills map[string]ManifestEntry `yaml:"skills,omitempty"`
 	Docs   map[string]ManifestEntry `yaml:"docs,omitempty"`
+	Rules  map[string]ManifestEntry `yaml:"rules,omitempty"`
 }
 
 // ManifestPath returns the expected path of the manifest file for a given
@@ -317,5 +320,11 @@ func (m *Manifest) SkillVersion(name string) (string, bool) {
 // DocVersion returns the declared version for a doc, or "" if missing.
 func (m *Manifest) DocVersion(name string) (string, bool) {
 	e, ok := m.Docs[name]
+	return e.Version, ok
+}
+
+// RuleVersion returns the declared version for a rule, or "" if missing.
+func (m *Manifest) RuleVersion(name string) (string, bool) {
+	e, ok := m.Rules[name]
 	return e.Version, ok
 }

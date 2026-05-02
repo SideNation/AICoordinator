@@ -24,6 +24,7 @@ var (
 	flagGlobal bool   // true = user scope (home), false = project scope (cwd)
 	flagTarget string // "claude" | "opencode" | "all"
 	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
+	flagRules  string // "" = none, "*" = all, "a,b,c" = selected
 	flagSrc    string // override packages source root
 )
 
@@ -31,8 +32,10 @@ func init() {
 	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.config/opencode) instead of current project")
 	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
 	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
-	// allow bare `--docs` (no value) to mean "all docs"
+	installCmd.Flags().StringVar(&flagRules, "rules", "", "install rules: comma-separated names, or empty (= all when flag present, skip when absent)")
+	// allow bare `--docs` / `--rules` (no value) to mean "all"
 	installCmd.Flags().Lookup("docs").NoOptDefVal = "*"
+	installCmd.Flags().Lookup("rules").NoOptDefVal = "*"
 	installCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
 
@@ -48,8 +51,9 @@ func runInstall(cmd *cobra.Command) error {
 	}
 
 	scope := scopeFromGlobal(flagGlobal)
-	docsReq := parseDocsFlag(cmd, src, manifest)
-	summary, err := doInstall(src, scope, flagTarget, docsReq, manifest)
+	docsReq := parseSelectFlag(cmd, "docs", flagDocs, manifestDocsNames(manifest))
+	rulesReq := parseSelectFlag(cmd, "rules", flagRules, manifestRulesNames(manifest))
+	summary, err := doInstall(src, scope, flagTarget, docsReq, rulesReq, manifest)
 	if err != nil {
 		return err
 	}
@@ -62,6 +66,7 @@ type installSummary struct {
 	agents map[string]string // name -> version
 	skills map[string]string
 	docs   map[string]string
+	rules  map[string]string
 }
 
 // loadManifestForSrc resolves the clone dir that contains `src` (its parent,
@@ -79,22 +84,20 @@ func scopeFromGlobal(global bool) string {
 	return "project"
 }
 
-// parseDocsFlag translates the --docs flag into a list of doc names to install.
-// Returns nil when the flag was not set, meaning "no docs". When --docs is set
-// with no value (or "*"), returns every doc declared in the manifest.
-func parseDocsFlag(cmd *cobra.Command, src string, manifest *config.Manifest) []string {
-	if !cmd.Flags().Changed("docs") {
+// parseSelectFlag translates a comma-list flag (--docs, --rules) into a list
+// of names to install. Returns nil when the flag was not set, meaning "skip".
+// When the flag is set with no value (or "*"), returns every name in `all`.
+func parseSelectFlag(cmd *cobra.Command, flagName, value string, all []string) []string {
+	if !cmd.Flags().Changed(flagName) {
 		return nil
 	}
-	if flagDocs == "*" || strings.TrimSpace(flagDocs) == "" {
-		var out []string
-		for name := range manifest.Docs {
-			out = append(out, name)
-		}
+	if value == "*" || strings.TrimSpace(value) == "" {
+		out := make([]string, 0, len(all))
+		out = append(out, all...)
 		return out
 	}
 	var out []string
-	for _, p := range strings.Split(flagDocs, ",") {
+	for _, p := range strings.Split(value, ",") {
 		if s := strings.TrimSpace(p); s != "" {
 			out = append(out, s)
 		}
@@ -102,15 +105,32 @@ func parseDocsFlag(cmd *cobra.Command, src string, manifest *config.Manifest) []
 	return out
 }
 
-// doInstall copies agents, skills, and selected docs declared in the manifest.
-// Each installed item's manifest version is returned in the summary so the
-// caller can record it in .lock. Items not listed in the manifest are skipped
-// with a warning — the manifest is authoritative.
-func doInstall(src, scope, target string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
+func manifestDocsNames(m *config.Manifest) []string {
+	out := make([]string, 0, len(m.Docs))
+	for n := range m.Docs {
+		out = append(out, n)
+	}
+	return out
+}
+
+func manifestRulesNames(m *config.Manifest) []string {
+	out := make([]string, 0, len(m.Rules))
+	for n := range m.Rules {
+		out = append(out, n)
+	}
+	return out
+}
+
+// doInstall copies agents, skills, and selected docs/rules declared in the
+// manifest. Each installed item's manifest version is returned in the summary
+// so the caller can record it in .lock. Items not listed in the manifest are
+// skipped with a warning — the manifest is authoritative.
+func doInstall(src, scope, target string, docsReq, rulesReq []string, manifest *config.Manifest) (*installSummary, error) {
 	sum := &installSummary{
 		agents: map[string]string{},
 		skills: map[string]string{},
 		docs:   map[string]string{},
+		rules:  map[string]string{},
 	}
 
 	doClaude := target == "claude" || target == "all"
@@ -166,6 +186,29 @@ func doInstall(src, scope, target string, docsReq []string, manifest *config.Man
 			return nil, err
 		}
 		sum.docs[name] = entry.Version
+	}
+
+	for _, name := range rulesReq {
+		entry, ok := manifest.Rules[name]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "warning: rule %q not declared in manifest, skipping\n", name)
+			continue
+		}
+		ruleSrc := filepath.Join(src, "rules", name+".md")
+		if _, err := os.Stat(ruleSrc); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: rule %q not found in package source, skipping\n", name)
+			continue
+		}
+		dstDir := rulesDir(scope)
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", dstDir, err)
+		}
+		ruleDst := filepath.Join(dstDir, name+".md")
+		if err := copyFile(ruleSrc, ruleDst); err != nil {
+			return nil, err
+		}
+		fmt.Printf("installed %s → %s\n", ruleSrc, ruleDst)
+		sum.rules[name] = entry.Version
 	}
 	return sum, nil
 }
@@ -239,6 +282,7 @@ func recordInstall(src, scope, target string, sum *installSummary) error {
 		Agents:  mergeVersions(existing.Agents, sum.agents),
 		Skills:  mergeVersions(existing.Skills, sum.skills),
 		Docs:    mergeVersions(existing.Docs, sum.docs),
+		Rules:   mergeVersions(existing.Rules, sum.rules),
 		Version: version,
 	})
 	if err := config.SaveLock(lock); err != nil {
@@ -380,6 +424,13 @@ func docsDir(scope string) string {
 		return filepath.Join(homeDir(), ".claude", "docs")
 	}
 	return filepath.Join(".claude", "docs")
+}
+
+func rulesDir(scope string) string {
+	if scope == "user" {
+		return filepath.Join(homeDir(), ".claude", "rules")
+	}
+	return filepath.Join(".claude", "rules")
 }
 
 func homeDir() string {
