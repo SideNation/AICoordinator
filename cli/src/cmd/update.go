@@ -234,11 +234,11 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		}
 		fmt.Printf("  rules/%s: %s → %s\n", name, displayVersion(locked), declared)
 		ruleSrc := filepath.Join(src, "rules", name+".md")
-		dstDir := rulesDir(rec.Scope)
-		if err := os.MkdirAll(dstDir, 0755); err != nil {
-			return rec, fmt.Errorf("mkdir %s: %w", dstDir, err)
+		ruleDst := filepath.Join(rulesDir(rec.Scope), name+".md")
+		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
+			return rec, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
 		}
-		if err := copyFile(ruleSrc, filepath.Join(dstDir, name+".md")); err != nil {
+		if err := copyFile(ruleSrc, ruleDst); err != nil {
 			return rec, err
 		}
 		newRules[name] = declared

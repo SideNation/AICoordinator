@@ -185,11 +185,11 @@ func doInstall(src, scope, target string, docsReq []string, manifest *config.Man
 			fmt.Fprintf(os.Stderr, "warning: rule %q not found in package source, skipping\n", name)
 			continue
 		}
-		dstDir := rulesDir(scope)
-		if err := os.MkdirAll(dstDir, 0755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", dstDir, err)
+		ruleDst := filepath.Join(rulesDir(scope), name+".md")
+		// rule 이름이 "foo/bar"처럼 서브디렉터리를 포함할 수 있으므로 부모도 함께 생성
+		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
 		}
-		ruleDst := filepath.Join(dstDir, name+".md")
 		if err := copyFile(ruleSrc, ruleDst); err != nil {
 			return nil, err
 		}
