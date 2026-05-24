@@ -18,11 +18,13 @@ type Renderer func(src *Source) ([]byte, []string, error)
 type Platform struct {
 	Name      string   // canonical name, used in .lock
 	Aliases   []string // short forms accepted on --target
-	Extension string   // file extension including dot (".md" / ".toml")
+	Extension string   // file extension for agent files (".md" / ".toml")
 	Render    Renderer
-	// InstallDir returns the directory where compiled agent files live for
-	// the given scope. scope is "project" or "user".
-	InstallDir func(scope string) string
+
+	// ConfigRoot returns the platform's config root directory for the given
+	// scope ("project" or "user"). All other directories (agents/, rules/,
+	// docs/) live under this root.
+	ConfigRoot func(scope string) string
 }
 
 // FileName returns the agent file name (e.g. "code-reviewer.md") for this
@@ -31,10 +33,40 @@ func (p Platform) FileName(agentName string) string {
 	return agentName + p.Extension
 }
 
-// Path returns the absolute (scope-resolved) destination path for an agent
-// file on this platform.
+// AgentsDir returns the agents subdirectory under the platform's config root.
+func (p Platform) AgentsDir(scope string) string {
+	return filepath.Join(p.ConfigRoot(scope), "agents")
+}
+
+// RulesDir returns the rules subdirectory under the platform's config root.
+func (p Platform) RulesDir(scope string) string {
+	return filepath.Join(p.ConfigRoot(scope), "rules")
+}
+
+// DocsDir returns the docs subdirectory under the platform's config root.
+func (p Platform) DocsDir(scope string) string {
+	return filepath.Join(p.ConfigRoot(scope), "docs")
+}
+
+// SkillsDir returns the skills subdirectory under the platform's config
+// root. Only Claude treats this as a first-class install target; other
+// platforms reach Claude's skills indirectly via .agents/skills.
+func (p Platform) SkillsDir(scope string) string {
+	return filepath.Join(p.ConfigRoot(scope), "skills")
+}
+
+// Path returns the absolute (scope-resolved) destination path for a
+// rendered agent file on this platform (uses the platform's native
+// extension — .md, .toml, etc.).
 func (p Platform) Path(scope, agentName string) string {
-	return filepath.Join(p.InstallDir(scope), p.FileName(agentName))
+	return filepath.Join(p.AgentsDir(scope), p.FileName(agentName))
+}
+
+// LinkedAgentPath returns the per-platform path of the symlink that points
+// back to Claude's canonical agent file. Always uses ".md" because the
+// symlink target is Claude's markdown file.
+func (p Platform) LinkedAgentPath(scope, agentName string) string {
+	return filepath.Join(p.AgentsDir(scope), agentName+".md")
 }
 
 var platformRegistry = []Platform{
@@ -43,28 +75,28 @@ var platformRegistry = []Platform{
 		Aliases:    []string{"cl"},
 		Extension:  ".md",
 		Render:     renderClaude,
-		InstallDir: claudeInstallDir,
+		ConfigRoot: claudeConfigRoot,
 	},
 	{
 		Name:       "codex",
 		Aliases:    []string{"co"},
 		Extension:  ".toml",
 		Render:     renderCodex,
-		InstallDir: codexInstallDir,
+		ConfigRoot: codexConfigRoot,
 	},
 	{
 		Name:       "kilo",
 		Aliases:    []string{"ki"},
 		Extension:  ".md",
 		Render:     renderKilo,
-		InstallDir: kiloInstallDir,
+		ConfigRoot: kiloConfigRoot,
 	},
 	{
 		Name:       "opencode",
 		Aliases:    []string{"op"},
 		Extension:  ".md",
 		Render:     renderOpencode,
-		InstallDir: opencodeInstallDir,
+		ConfigRoot: opencodeConfigRoot,
 	},
 }
 
@@ -191,35 +223,72 @@ func ParseLockTarget(s string) []string {
 }
 
 // ---------------------------------------------------------------------------
-// Install directories
+// Platform config roots
 // ---------------------------------------------------------------------------
 
-func claudeInstallDir(scope string) string {
+func claudeConfigRoot(scope string) string {
 	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "agents")
+		return filepath.Join(homeDir(), ".claude")
 	}
-	return filepath.Join(".claude", "agents")
+	return ".claude"
 }
 
-func codexInstallDir(scope string) string {
+func codexConfigRoot(scope string) string {
 	if scope == "user" {
-		return filepath.Join(homeDir(), ".codex", "agents")
+		return filepath.Join(homeDir(), ".codex")
 	}
-	return filepath.Join(".codex", "agents")
+	return ".codex"
 }
 
-func kiloInstallDir(scope string) string {
+func kiloConfigRoot(scope string) string {
 	if scope == "user" {
-		return filepath.Join(homeDir(), ".config", "kilo", "agents")
+		return filepath.Join(homeDir(), ".config", "kilo")
 	}
-	return filepath.Join(".kilo", "agents")
+	return ".kilo"
 }
 
-func opencodeInstallDir(scope string) string {
+func opencodeConfigRoot(scope string) string {
 	if scope == "user" {
-		return filepath.Join(homeDir(), ".config", "opencode", "agents")
+		return filepath.Join(homeDir(), ".config", "opencode")
 	}
-	return filepath.Join(".opencode", "agents")
+	return ".opencode"
+}
+
+// SharedAgentsRoot returns the platform-agnostic ".agents" directory used as
+// a bridge from non-Claude platforms (Codex/Kilo/opencode) to Claude's
+// skills folder. The Codex docs explicitly read skills via paths like
+// "~/.agents/skills/<skill>/SKILL.md".
+func SharedAgentsRoot(scope string) string {
+	if scope == "user" {
+		return filepath.Join(homeDir(), ".agents")
+	}
+	return ".agents"
+}
+
+// HasNonClaude reports whether the given canonical target list includes any
+// platform other than claude — used to decide whether to materialise the
+// shared .agents/skills bridge.
+func HasNonClaude(targets []string) bool {
+	for _, t := range targets {
+		if t != "claude" {
+			return true
+		}
+	}
+	return false
+}
+
+// EnsureClaude returns a target list that always includes "claude". The
+// install/update flows treat Claude as the canonical destination; other
+// platforms get symlinks pointing back to Claude's files.
+func EnsureClaude(targets []string) []string {
+	for _, t := range targets {
+		if t == "claude" {
+			return targets
+		}
+	}
+	out := append([]string{"claude"}, targets...)
+	sort.Strings(out)
+	return out
 }
 
 func homeDir() string {

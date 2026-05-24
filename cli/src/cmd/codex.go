@@ -3,9 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 )
@@ -78,28 +76,3 @@ func runCodex() error {
 	return nil
 }
 
-// createDirLink creates a directory link at `link` pointing to `target`.
-// On Unix it uses a symbolic link. On Windows it uses a directory junction
-// (mklink /J) because junctions can be created without administrator rights;
-// it falls back to os.Symlink if mklink is unavailable.
-func createDirLink(target, link string) error {
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		return err
-	}
-	if runtime.GOOS != "windows" {
-		return os.Symlink(absTarget, link)
-	}
-	absLink, err := filepath.Abs(link)
-	if err != nil {
-		return err
-	}
-	out, mkErr := exec.Command("cmd", "/c", "mklink", "/J", absLink, absTarget).CombinedOutput()
-	if mkErr == nil {
-		return nil
-	}
-	if symErr := os.Symlink(absTarget, link); symErr == nil {
-		return nil
-	}
-	return fmt.Errorf("mklink /J failed: %s: %w", string(out), mkErr)
-}

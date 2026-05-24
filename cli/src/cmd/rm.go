@@ -199,9 +199,10 @@ func itemMap(rec *config.InstallRecord, kind string) map[string]string {
 // removeItem deletes the on-disk artifacts for one tracked item. Missing
 // files are tolerated since the user may have removed them already.
 func removeItem(rec *config.InstallRecord, kind, name string) error {
+	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
 	switch kind {
 	case "agent":
-		for _, pn := range agent.ParseLockTarget(rec.Target) {
+		for _, pn := range platforms {
 			p, ok := agent.ResolvePlatform(pn)
 			if !ok {
 				continue
@@ -209,12 +210,41 @@ func removeItem(rec *config.InstallRecord, kind, name string) error {
 			if err := removeIfExists(p.Path(rec.Scope, name)); err != nil {
 				return err
 			}
+			if err := removeIfExists(p.LinkedAgentPath(rec.Scope, name)); err != nil {
+				return err
+			}
 		}
 	case "skill":
+		// Bridge symlink stays — it covers the whole skills directory and
+		// other skills may still need it.
 		return removeIfExists(filepath.Join(skillsDir(rec.Scope), name))
 	case "doc":
+		for _, pn := range platforms {
+			if pn == "claude" {
+				continue
+			}
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
+			}
+			if err := removeIfExists(filepath.Join(p.DocsDir(rec.Scope), name)); err != nil {
+				return err
+			}
+		}
 		return removeIfExists(filepath.Join(docsDir(rec.Scope), name))
 	case "rule":
+		for _, pn := range platforms {
+			if pn == "claude" {
+				continue
+			}
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
+			}
+			if err := removeIfExists(filepath.Join(p.RulesDir(rec.Scope), name+".md")); err != nil {
+				return err
+			}
+		}
 		return removeIfExists(filepath.Join(rulesDir(rec.Scope), name+".md"))
 	}
 	return nil

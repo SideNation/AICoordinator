@@ -128,7 +128,9 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		defer os.Chdir(orig)
 	}
 
-	platforms := agent.ParseLockTarget(rec.Target)
+	// Claude is always part of the install — re-apply that invariant when
+	// reading legacy lock entries that might omit it.
+	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
 	cloneDir := filepath.Dir(src)
 
 	// ----- agents -----
@@ -184,6 +186,11 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		}
 		newSkills[name] = declared
 	}
+	if len(newSkills) > 0 && agent.HasNonClaude(platforms) {
+		if err := linkSkillsBridge(rec.Scope); err != nil {
+			return rec, err
+		}
+	}
 
 	// ----- docs -----
 	newDocs := map[string]string{}
@@ -191,6 +198,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.DocVersion(name)
 		if !ok {
 			if confirmRemoval("doc", name, rec.Scope) {
+				removeDocFromPlatforms(rec.Scope, name, platforms)
 				target := filepath.Join(docsDir(rec.Scope), name)
 				if err := os.RemoveAll(target); err != nil {
 					return rec, fmt.Errorf("remove %s: %w", target, err)
@@ -212,6 +220,9 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		if err := installTree(filepath.Join(src, "docs", name), target); err != nil {
 			return rec, err
 		}
+		if err := linkDocForPlatforms(rec.Scope, name, platforms); err != nil {
+			return rec, err
+		}
 		newDocs[name] = declared
 	}
 
@@ -221,6 +232,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.RuleVersion(name)
 		if !ok {
 			if confirmRemoval("rule", name, rec.Scope) {
+				removeRuleFromPlatforms(rec.Scope, name, platforms)
 				target := filepath.Join(rulesDir(rec.Scope), name+".md")
 				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 					return rec, fmt.Errorf("remove %s: %w", target, err)
@@ -241,6 +253,9 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 			return rec, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
 		}
 		if err := copyFile(ruleSrc, ruleDst); err != nil {
+			return rec, err
+		}
+		if err := linkRuleForPlatforms(rec.Scope, name, platforms); err != nil {
 			return rec, err
 		}
 		newRules[name] = declared
@@ -267,8 +282,40 @@ func nilIfEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// removeAgentFromPlatforms deletes the installed agent file from each tracked
-// platform's install directory. Missing files are ignored.
+// removeDocFromPlatforms deletes the per-platform doc symlinks created
+// alongside Claude's canonical doc tree. Missing symlinks are ignored.
+func removeDocFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		if pn == "claude" {
+			continue
+		}
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
+		}
+		os.Remove(filepath.Join(p.DocsDir(scope), name))
+	}
+}
+
+// removeRuleFromPlatforms deletes the per-platform rule symlinks. Missing
+// symlinks are ignored.
+func removeRuleFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		if pn == "claude" {
+			continue
+		}
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
+		}
+		os.Remove(filepath.Join(p.RulesDir(scope), name+".md"))
+	}
+}
+
+// removeAgentFromPlatforms deletes the installed agent file from every
+// tracked platform. Both the platform-native rendered path (.toml for Codex
+// etc.) and the symlink path (which always uses Claude's .md filename) are
+// removed because either could exist depending on the agent's useonly.
 func removeAgentFromPlatforms(scope, name string, platforms []string) {
 	for _, pn := range platforms {
 		p, ok := agent.ResolvePlatform(pn)
@@ -276,6 +323,7 @@ func removeAgentFromPlatforms(scope, name string, platforms []string) {
 			continue
 		}
 		os.Remove(p.Path(scope, name))
+		os.Remove(p.LinkedAgentPath(scope, name))
 	}
 }
 

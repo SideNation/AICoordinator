@@ -258,3 +258,71 @@ func mustParse(t *testing.T, s string) *Source {
 	}
 	return src
 }
+
+func TestPlatformDirsProject(t *testing.T) {
+	cases := map[string]struct {
+		agents string
+		rules  string
+		docs   string
+	}{
+		"claude":   {".claude/agents", ".claude/rules", ".claude/docs"},
+		"codex":    {".codex/agents", ".codex/rules", ".codex/docs"},
+		"kilo":     {".kilo/agents", ".kilo/rules", ".kilo/docs"},
+		"opencode": {".opencode/agents", ".opencode/rules", ".opencode/docs"},
+	}
+	for name, want := range cases {
+		p, ok := ResolvePlatform(name)
+		if !ok {
+			t.Fatalf("platform %q not found", name)
+		}
+		if got := p.AgentsDir("project"); got != want.agents {
+			t.Errorf("%s agents: %q want %q", name, got, want.agents)
+		}
+		if got := p.RulesDir("project"); got != want.rules {
+			t.Errorf("%s rules: %q want %q", name, got, want.rules)
+		}
+		if got := p.DocsDir("project"); got != want.docs {
+			t.Errorf("%s docs: %q want %q", name, got, want.docs)
+		}
+	}
+}
+
+func TestLinkedAgentPathAlwaysMD(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "kilo", "opencode"} {
+		p, ok := ResolvePlatform(name)
+		if !ok {
+			t.Fatalf("platform %q not found", name)
+		}
+		got := p.LinkedAgentPath("project", "code-reviewer")
+		if !strings.HasSuffix(got, "code-reviewer.md") {
+			t.Errorf("%s: LinkedAgentPath %q must end in .md", name, got)
+		}
+	}
+}
+
+func TestEnsureClaudeAlwaysIncluded(t *testing.T) {
+	got := EnsureClaude([]string{"codex"})
+	if !reflect.DeepEqual(got, []string{"claude", "codex"}) {
+		t.Errorf("EnsureClaude([codex]) = %v", got)
+	}
+	got = EnsureClaude([]string{"claude", "codex"})
+	if !reflect.DeepEqual(got, []string{"claude", "codex"}) {
+		t.Errorf("EnsureClaude([claude,codex]) = %v", got)
+	}
+	got = EnsureClaude(nil)
+	if !reflect.DeepEqual(got, []string{"claude"}) {
+		t.Errorf("EnsureClaude(nil) = %v", got)
+	}
+}
+
+func TestHasNonClaude(t *testing.T) {
+	if HasNonClaude([]string{"claude"}) {
+		t.Error("HasNonClaude([claude]) should be false")
+	}
+	if !HasNonClaude([]string{"claude", "codex"}) {
+		t.Error("HasNonClaude([claude,codex]) should be true")
+	}
+	if !HasNonClaude([]string{"opencode"}) {
+		t.Error("HasNonClaude([opencode]) should be true")
+	}
+}
