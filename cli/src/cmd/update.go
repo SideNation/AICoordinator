@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -127,8 +128,8 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		defer os.Chdir(orig)
 	}
 
-	doClaude := rec.Target == "claude" || rec.Target == "all"
-	doOpencode := rec.Target == "opencode" || rec.Target == "all"
+	platforms := agent.ParseLockTarget(rec.Target)
+	cloneDir := filepath.Dir(src)
 
 	// ----- agents -----
 	newAgents := map[string]string{}
@@ -136,7 +137,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.AgentVersion(name)
 		if !ok {
 			if confirmRemoval("agent", name, rec.Scope) {
-				removeAgent(rec.Scope, name, doClaude, doOpencode)
+				removeAgentFromPlatforms(rec.Scope, name, platforms)
 				continue
 			}
 			newAgents[name] = locked
@@ -147,7 +148,8 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 			continue
 		}
 		fmt.Printf("  agents/%s: %s → %s\n", name, displayVersion(locked), declared)
-		if err := reinstallAgent(src, rec.Scope, name, doClaude, doOpencode); err != nil {
+		srcPath := manifest.AgentSource(cloneDir, name)
+		if _, err := installAgentFromSource(srcPath, rec.Scope, platforms); err != nil {
 			return rec, err
 		}
 		newAgents[name] = declared
@@ -265,30 +267,15 @@ func nilIfEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// reinstallAgent copies the agent .md file for the enabled targets, creating
-// the destination directory when needed.
-func reinstallAgent(src, scope, name string, doClaude, doOpencode bool) error {
-	if doClaude {
-		if _, err := installAgentFile(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), name); err != nil {
-			return err
+// removeAgentFromPlatforms deletes the installed agent file from each tracked
+// platform's install directory. Missing files are ignored.
+func removeAgentFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
 		}
-	}
-	if doOpencode {
-		if _, err := installAgentFile(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), name); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// removeAgent deletes the installed `<name>.md` agent file from whichever
-// target directories are enabled for this record. Missing files are ignored.
-func removeAgent(scope, name string, doClaude, doOpencode bool) {
-	if doClaude {
-		os.Remove(filepath.Join(agentDirClaude(scope), name+".md"))
-	}
-	if doOpencode {
-		os.Remove(filepath.Join(agentDirOpencode(scope), name+".md"))
+		os.Remove(p.Path(scope, name))
 	}
 }
 

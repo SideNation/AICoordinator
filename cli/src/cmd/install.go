@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -22,14 +23,14 @@ var installCmd = &cobra.Command{
 
 var (
 	flagGlobal bool   // true = user scope (home), false = project scope (cwd)
-	flagTarget string // "claude" | "opencode" | "all"
+	flagTarget string // comma list of platform names/aliases, or "all"
 	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
 	flagSrc    string // override packages source root
 )
 
 func init() {
-	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.config/opencode) instead of current project")
-	installCmd.Flags().StringVar(&flagTarget, "target", "claude", "agent target: claude, opencode, or all")
+	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.codex, ~/.config/...) instead of current project")
+	installCmd.Flags().StringVar(&flagTarget, "target", "all", "agent target list: comma-separated values from claude|cl, codex|co, kilo|ki, opencode|op, or all")
 	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
 	// allow bare `--docs` (no value) to mean "all docs"
 	installCmd.Flags().Lookup("docs").NoOptDefVal = "*"
@@ -47,13 +48,18 @@ func runInstall(cmd *cobra.Command) error {
 		return err
 	}
 
-	scope := scopeFromGlobal(flagGlobal)
-	docsReq := parseSelectFlag(cmd, "docs", flagDocs, manifestDocsNames(manifest))
-	summary, err := doInstall(src, scope, flagTarget, docsReq, manifest)
+	targets, err := agent.ParseTargetSpec(flagTarget)
 	if err != nil {
 		return err
 	}
-	return recordInstall(src, scope, flagTarget, summary)
+
+	scope := scopeFromGlobal(flagGlobal)
+	docsReq := parseSelectFlag(cmd, "docs", flagDocs, manifestDocsNames(manifest))
+	summary, err := doInstall(src, scope, targets, docsReq, manifest)
+	if err != nil {
+		return err
+	}
+	return recordInstall(src, scope, targets, summary)
 }
 
 // installSummary captures which items were installed and their manifest versions,
@@ -111,12 +117,8 @@ func manifestDocsNames(m *config.Manifest) []string {
 
 // doInstall copies agents, skills, rules, and selected docs declared in the
 // manifest. Each installed item's manifest version is returned in the summary
-// so the caller can record it in .lock. Items not listed in the manifest are
-// skipped with a warning — the manifest is authoritative.
-//
-// Agents, skills, and rules are always installed (every entry in the
-// manifest); docs require an explicit selection via docsReq.
-func doInstall(src, scope, target string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
+// so the caller can record it in .lock.
+func doInstall(src, scope string, targets []string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
 	sum := &installSummary{
 		agents: map[string]string{},
 		skills: map[string]string{},
@@ -124,23 +126,15 @@ func doInstall(src, scope, target string, docsReq []string, manifest *config.Man
 		rules:  map[string]string{},
 	}
 
-	doClaude := target == "claude" || target == "all"
-	doOpencode := target == "opencode" || target == "all"
-
+	cloneDir := filepath.Dir(src)
 	for name, entry := range manifest.Agents {
-		if doClaude {
-			if ok, err := installAgentFile(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), name); err != nil {
-				return nil, err
-			} else if ok {
-				sum.agents[name] = entry.Version
-			}
+		srcPath := manifest.AgentSource(cloneDir, name)
+		installed, err := installAgentFromSource(srcPath, scope, targets)
+		if err != nil {
+			return nil, err
 		}
-		if doOpencode {
-			if ok, err := installAgentFile(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), name); err != nil {
-				return nil, err
-			} else if ok {
-				sum.agents[name] = entry.Version
-			}
+		if installed {
+			sum.agents[name] = entry.Version
 		}
 	}
 
@@ -186,7 +180,6 @@ func doInstall(src, scope, target string, docsReq []string, manifest *config.Man
 			continue
 		}
 		ruleDst := filepath.Join(rulesDir(scope), name+".md")
-		// rule 이름이 "foo/bar"처럼 서브디렉터리를 포함할 수 있으므로 부모도 함께 생성
 		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
 			return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
 		}
@@ -199,26 +192,56 @@ func doInstall(src, scope, target string, docsReq []string, manifest *config.Man
 	return sum, nil
 }
 
-// installAgentFile copies a single `<name>.md` agent file from src to dst.
-// Returns (false, nil) when the source file does not exist (that target
-// simply doesn't ship this agent).
-func installAgentFile(srcDir, dstDir, name string) (bool, error) {
-	srcPath := filepath.Join(srcDir, name+".md")
+// installAgentFromSource parses and validates a single-source agent and
+// writes the rendered file to every selected platform that the agent's
+// useonly field allows. Returns true if at least one file was written.
+func installAgentFromSource(srcPath, scope string, targets []string) (bool, error) {
 	if _, err := os.Stat(srcPath); err != nil {
 		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: agent source %q not found, skipping\n", srcPath)
 			return false, nil
 		}
 		return false, err
 	}
-	if err := os.MkdirAll(dstDir, 0755); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", dstDir, err)
+
+	src, err := agent.LoadFile(srcPath)
+	if err != nil {
+		return false, fmt.Errorf("load %s: %w", srcPath, err)
 	}
-	dstPath := filepath.Join(dstDir, name+".md")
-	if err := copyFile(srcPath, dstPath); err != nil {
+	if err := agent.Validate(src); err != nil {
 		return false, err
 	}
-	fmt.Printf("installed %s → %s\n", srcPath, dstPath)
-	return true, nil
+
+	picked := agent.EffectiveTargets(src, targets)
+	if len(picked) == 0 {
+		fmt.Printf("skipped %s (no enabled targets match useonly=%q)\n", srcPath, src.UseOnly)
+		return false, nil
+	}
+
+	wrote := false
+	for _, name := range picked {
+		p, ok := agent.ResolvePlatform(name)
+		if !ok {
+			continue
+		}
+		data, warns, err := p.Render(src)
+		if err != nil {
+			return wrote, fmt.Errorf("render %s for %s: %w", srcPath, name, err)
+		}
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "warning [%s -> %s]: %s\n", src.Name, name, w)
+		}
+		dst := p.Path(scope, src.Name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return wrote, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+		}
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			return wrote, fmt.Errorf("write %s: %w", dst, err)
+		}
+		fmt.Printf("installed %s → %s\n", srcPath, dst)
+		wrote = true
+	}
+	return wrote, nil
 }
 
 // resolvePackagesSrc returns the root of `agents/ skills/ docs/` to install from.
@@ -244,7 +267,7 @@ func resolvePackagesSrc() (string, error) {
 
 // recordInstall updates ~/.aico/.lock with this install, merging per-item
 // version maps with the existing record for the same (path, scope).
-func recordInstall(src, scope, target string, sum *installSummary) error {
+func recordInstall(src, scope string, targets []string, sum *installSummary) error {
 	lock, err := config.LoadLock()
 	if err != nil {
 		return err
@@ -264,7 +287,7 @@ func recordInstall(src, scope, target string, sum *installSummary) error {
 	lock.Upsert(config.InstallRecord{
 		Path:    installPath,
 		Scope:   scope,
-		Target:  target,
+		Target:  agent.FormatTargetList(targets),
 		Agents:  mergeVersions(existing.Agents, sum.agents),
 		Skills:  mergeVersions(existing.Skills, sum.skills),
 		Docs:    mergeVersions(existing.Docs, sum.docs),
@@ -382,21 +405,7 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
-// ---------- path helpers ----------
-
-func agentDirClaude(scope string) string {
-	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "agents")
-	}
-	return filepath.Join(".claude", "agents")
-}
-
-func agentDirOpencode(scope string) string {
-	if scope == "user" {
-		return filepath.Join(homeDir(), ".config", "opencode", "agents")
-	}
-	return filepath.Join(".opencode", "agents")
-}
+// ---------- path helpers (skills/docs/rules; agent paths live in agent pkg) ----------
 
 func skillsDir(scope string) string {
 	if scope == "user" {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -200,15 +201,12 @@ func itemMap(rec *config.InstallRecord, kind string) map[string]string {
 func removeItem(rec *config.InstallRecord, kind, name string) error {
 	switch kind {
 	case "agent":
-		doClaude := rec.Target == "claude" || rec.Target == "all"
-		doOpencode := rec.Target == "opencode" || rec.Target == "all"
-		if doClaude {
-			if err := removeIfExists(filepath.Join(agentDirClaude(rec.Scope), name+".md")); err != nil {
-				return err
+		for _, pn := range agent.ParseLockTarget(rec.Target) {
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
 			}
-		}
-		if doOpencode {
-			if err := removeIfExists(filepath.Join(agentDirOpencode(rec.Scope), name+".md")); err != nil {
+			if err := removeIfExists(p.Path(rec.Scope, name)); err != nil {
 				return err
 			}
 		}
