@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -198,25 +199,52 @@ func itemMap(rec *config.InstallRecord, kind string) map[string]string {
 // removeItem deletes the on-disk artifacts for one tracked item. Missing
 // files are tolerated since the user may have removed them already.
 func removeItem(rec *config.InstallRecord, kind, name string) error {
+	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
 	switch kind {
 	case "agent":
-		doClaude := rec.Target == "claude" || rec.Target == "all"
-		doOpencode := rec.Target == "opencode" || rec.Target == "all"
-		if doClaude {
-			if err := removeIfExists(filepath.Join(agentDirClaude(rec.Scope), name+".md")); err != nil {
+		for _, pn := range platforms {
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
+			}
+			if err := removeIfExists(p.Path(rec.Scope, name)); err != nil {
 				return err
 			}
-		}
-		if doOpencode {
-			if err := removeIfExists(filepath.Join(agentDirOpencode(rec.Scope), name+".md")); err != nil {
+			if err := removeIfExists(p.LinkedAgentPath(rec.Scope, name)); err != nil {
 				return err
 			}
 		}
 	case "skill":
+		// Bridge symlink stays — it covers the whole skills directory and
+		// other skills may still need it.
 		return removeIfExists(filepath.Join(skillsDir(rec.Scope), name))
 	case "doc":
+		for _, pn := range platforms {
+			if pn == "claude" {
+				continue
+			}
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
+			}
+			if err := removeIfExists(filepath.Join(p.DocsDir(rec.Scope), name)); err != nil {
+				return err
+			}
+		}
 		return removeIfExists(filepath.Join(docsDir(rec.Scope), name))
 	case "rule":
+		for _, pn := range platforms {
+			if pn == "claude" {
+				continue
+			}
+			p, ok := agent.ResolvePlatform(pn)
+			if !ok {
+				continue
+			}
+			if err := removeIfExists(filepath.Join(p.RulesDir(rec.Scope), name+".md")); err != nil {
+				return err
+			}
+		}
 		return removeIfExists(filepath.Join(rulesDir(rec.Scope), name+".md"))
 	}
 	return nil

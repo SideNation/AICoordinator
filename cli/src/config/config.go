@@ -270,7 +270,10 @@ func PackagesDir(cloneDir string) string {
 }
 
 // ManifestEntry holds the declared version of a single agent/skill/doc.
+// Source is optional — when set, it overrides the default packages/<kind>/<name>
+// lookup path. Relative source paths are resolved against the clone root.
 type ManifestEntry struct {
+	Source  string `yaml:"source,omitempty"`
 	Version string `yaml:"version"`
 }
 
@@ -309,6 +312,20 @@ func LoadManifest(cloneDir string) (*Manifest, error) {
 func (m *Manifest) AgentVersion(name string) (string, bool) {
 	e, ok := m.Agents[name]
 	return e.Version, ok
+}
+
+// AgentSource returns the resolved on-disk path of the single-source agent
+// markdown for `name`, given the clone root. When manifest.source is set it
+// wins; otherwise we default to <cloneDir>/packages/agents/<name>.md.
+// Relative manifest.source values are resolved against cloneDir.
+func (m *Manifest) AgentSource(cloneDir, name string) string {
+	if e, ok := m.Agents[name]; ok && e.Source != "" {
+		if filepath.IsAbs(e.Source) {
+			return e.Source
+		}
+		return filepath.Join(cloneDir, e.Source)
+	}
+	return filepath.Join(PackagesDir(cloneDir), "agents", name+".md")
 }
 
 // SkillVersion returns the declared version for a skill, or "" if missing.
