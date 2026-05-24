@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -127,8 +128,10 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		defer os.Chdir(orig)
 	}
 
-	doClaude := rec.Target == "claude" || rec.Target == "all"
-	doOpencode := rec.Target == "opencode" || rec.Target == "all"
+	// Claude is always part of the install — re-apply that invariant when
+	// reading legacy lock entries that might omit it.
+	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
+	cloneDir := filepath.Dir(src)
 
 	// ----- agents -----
 	newAgents := map[string]string{}
@@ -136,7 +139,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.AgentVersion(name)
 		if !ok {
 			if confirmRemoval("agent", name, rec.Scope) {
-				removeAgent(rec.Scope, name, doClaude, doOpencode)
+				removeAgentFromPlatforms(rec.Scope, name, platforms)
 				continue
 			}
 			newAgents[name] = locked
@@ -147,7 +150,8 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 			continue
 		}
 		fmt.Printf("  agents/%s: %s → %s\n", name, displayVersion(locked), declared)
-		if err := reinstallAgent(src, rec.Scope, name, doClaude, doOpencode); err != nil {
+		srcPath := manifest.AgentSource(cloneDir, name)
+		if _, err := installAgentFromSource(srcPath, rec.Scope, platforms); err != nil {
 			return rec, err
 		}
 		newAgents[name] = declared
@@ -182,6 +186,11 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		}
 		newSkills[name] = declared
 	}
+	if len(newSkills) > 0 && agent.HasNonClaude(platforms) {
+		if err := linkSkillsBridge(rec.Scope); err != nil {
+			return rec, err
+		}
+	}
 
 	// ----- docs -----
 	newDocs := map[string]string{}
@@ -189,6 +198,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.DocVersion(name)
 		if !ok {
 			if confirmRemoval("doc", name, rec.Scope) {
+				removeDocFromPlatforms(rec.Scope, name, platforms)
 				target := filepath.Join(docsDir(rec.Scope), name)
 				if err := os.RemoveAll(target); err != nil {
 					return rec, fmt.Errorf("remove %s: %w", target, err)
@@ -210,6 +220,9 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		if err := installTree(filepath.Join(src, "docs", name), target); err != nil {
 			return rec, err
 		}
+		if err := linkDocForPlatforms(rec.Scope, name, platforms); err != nil {
+			return rec, err
+		}
 		newDocs[name] = declared
 	}
 
@@ -219,6 +232,7 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.RuleVersion(name)
 		if !ok {
 			if confirmRemoval("rule", name, rec.Scope) {
+				removeRuleFromPlatforms(rec.Scope, name, platforms)
 				target := filepath.Join(rulesDir(rec.Scope), name+".md")
 				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 					return rec, fmt.Errorf("remove %s: %w", target, err)
@@ -234,11 +248,14 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		}
 		fmt.Printf("  rules/%s: %s → %s\n", name, displayVersion(locked), declared)
 		ruleSrc := filepath.Join(src, "rules", name+".md")
-		dstDir := rulesDir(rec.Scope)
-		if err := os.MkdirAll(dstDir, 0755); err != nil {
-			return rec, fmt.Errorf("mkdir %s: %w", dstDir, err)
+		ruleDst := filepath.Join(rulesDir(rec.Scope), name+".md")
+		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
+			return rec, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
 		}
-		if err := copyFile(ruleSrc, filepath.Join(dstDir, name+".md")); err != nil {
+		if err := copyFile(ruleSrc, ruleDst); err != nil {
+			return rec, err
+		}
+		if err := linkRuleForPlatforms(rec.Scope, name, platforms); err != nil {
 			return rec, err
 		}
 		newRules[name] = declared
@@ -265,30 +282,48 @@ func nilIfEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// reinstallAgent copies the agent .md file for the enabled targets, creating
-// the destination directory when needed.
-func reinstallAgent(src, scope, name string, doClaude, doOpencode bool) error {
-	if doClaude {
-		if _, err := installAgentFile(filepath.Join(src, "agents", "claude"), agentDirClaude(scope), name); err != nil {
-			return err
+// removeDocFromPlatforms deletes the per-platform doc symlinks created
+// alongside Claude's canonical doc tree. Missing symlinks are ignored.
+func removeDocFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		if pn == "claude" {
+			continue
 		}
-	}
-	if doOpencode {
-		if _, err := installAgentFile(filepath.Join(src, "agents", "opencode"), agentDirOpencode(scope), name); err != nil {
-			return err
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
 		}
+		os.Remove(filepath.Join(p.DocsDir(scope), name))
 	}
-	return nil
 }
 
-// removeAgent deletes the installed `<name>.md` agent file from whichever
-// target directories are enabled for this record. Missing files are ignored.
-func removeAgent(scope, name string, doClaude, doOpencode bool) {
-	if doClaude {
-		os.Remove(filepath.Join(agentDirClaude(scope), name+".md"))
+// removeRuleFromPlatforms deletes the per-platform rule symlinks. Missing
+// symlinks are ignored.
+func removeRuleFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		if pn == "claude" {
+			continue
+		}
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
+		}
+		os.Remove(filepath.Join(p.RulesDir(scope), name+".md"))
 	}
-	if doOpencode {
-		os.Remove(filepath.Join(agentDirOpencode(scope), name+".md"))
+}
+
+// removeAgentFromPlatforms deletes the installed agent file from every
+// tracked platform. Both the platform-native rendered path (.toml for Codex
+// etc.) and the symlink path (which always uses Claude's .md filename) are
+// removed because either could exist depending on the agent's useonly.
+func removeAgentFromPlatforms(scope, name string, platforms []string) {
+	for _, pn := range platforms {
+		p, ok := agent.ResolvePlatform(pn)
+		if !ok {
+			continue
+		}
+		os.Remove(p.Path(scope, name))
+		os.Remove(p.LinkedAgentPath(scope, name))
 	}
 }
 

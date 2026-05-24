@@ -105,9 +105,10 @@ aico init
 | Claude agent | `.claude/agents/` | `~/.claude/agents/` |
 | opencode agent | `.opencode/agents/` | `~/.config/opencode/agents/` |
 | skills | `.claude/skills/` | `~/.claude/skills/` |
+| rules | `.claude/rules/` | `~/.claude/rules/` |
 | docs | `.claude/docs/` | `~/.claude/docs/` |
 
-> skills와 docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
+> skills, rules, docs는 Claude Code와 opencode 모두 `.claude/` 경로에서 로드하므로 Claude 경로에만 복사합니다.
 
 ### manifest.yaml — 설치 대상 선언
 
@@ -125,6 +126,10 @@ skills:
   docs-to-markdown:
     version: 2026-04-19
 
+rules:
+  coding-style:
+    version: 2026-04-19
+
 docs:
   onejs:
     version: 2026-04-20
@@ -140,9 +145,10 @@ docs:
 
 | 항목 | 기본 | 비고 |
 |---|---|---|
-| agents (Claude) | ✅ | manifest에 선언된 agent만. `--target opencode` / `--target all`로 대상 전환 |
+| agents (Claude) | ✅ | manifest에 선언된 agent 전부. `--target opencode` / `--target all`로 대상 전환 |
 | agents (opencode) | ❌ | `--target` 지정 필요 |
 | skills | ✅ | manifest에 선언된 skill 전부 |
+| rules | ✅ | manifest에 선언된 rule 전부 (`packages/rules/<name>.md` → `.claude/rules/<name>.md`) |
 | docs | ❌ | `--docs` 플래그로 활성화. manifest에 선언된 것 중 선택 설치 |
 
 ### `--docs` 동작
