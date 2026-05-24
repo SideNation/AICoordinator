@@ -1,3 +1,4 @@
+✨This page applies to the current VSCode extension & CLI.
 Custom Subagents
 
 Kilo Code's CLI supports custom subagents — specialized AI assistants that can be invoked by primary agents or manually via @ mentions. Subagents run in their own isolated sessions with tailored prompts, models, tool access, and permissions, enabling you to build purpose-built workflows for tasks like code review, documentation, security audits, and more.
@@ -320,3 +321,4 @@ Related
     Custom Rules — Define rules that apply to specific file types or situations
     Orchestrator Mode — Legacy mode for task delegation (now built into all agents)
     Task Tool — The tool used to invoke subagents
+
