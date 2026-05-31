@@ -25,7 +25,7 @@ func renderKilo(src *Source) ([]byte, []string, error) {
 		// Kilo documents `reasoningEffort` as a pass-through provider option
 		// (matches OpenAI's naming). Use that so opencode-style `effort` does
 		// not clash with provider conventions.
-		f.set("reasoningEffort", strings.ToLower(src.Effort))
+		f.set("reasoningEffort", effortForPlatform(src.Effort, "kilo"))
 	}
 	if len(src.Tools) > 0 {
 		f.set("tools", strings.Join(src.Tools, ", "))

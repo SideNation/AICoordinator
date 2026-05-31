@@ -200,10 +200,12 @@ func doInstall(src, scope string, targets []string, docsReq []string, manifest *
 			return nil, err
 		}
 		fmt.Printf("installed %s → %s\n", ruleSrc, ruleDst)
-		if err := linkRuleForPlatforms(scope, name, targets); err != nil {
+		sum.rules[name] = entry.Version
+	}
+	if len(sum.rules) > 0 && agent.HasNonClaude(targets) {
+		if err := linkRulesBridge(scope, targets); err != nil {
 			return nil, err
 		}
-		sum.rules[name] = entry.Version
 	}
 	return sum, nil
 }
@@ -313,10 +315,11 @@ func installAgentFromSource(srcPath, scope string, targets []string) (bool, erro
 	return wrote, nil
 }
 
-// linkRuleForPlatforms creates one symlink per non-Claude target pointing
-// from <platform-root>/rules/<name>.md back to Claude's rule file.
-func linkRuleForPlatforms(scope, name string, targets []string) error {
-	target := filepath.Join(rulesDir(scope), name+".md")
+// linkRulesBridge creates one directory symlink per non-Claude target so the
+// whole rules tree is shared from Claude. Rules are platform-agnostic, so a
+// directory-level link is enough and avoids per-file bookkeeping.
+func linkRulesBridge(scope string, targets []string) error {
+	target := rulesDir(scope)
 	for _, t := range targets {
 		if t == "claude" {
 			continue
@@ -325,9 +328,9 @@ func linkRuleForPlatforms(scope, name string, targets []string) error {
 		if !ok {
 			continue
 		}
-		link := filepath.Join(p.RulesDir(scope), name+".md")
-		if err := replaceLink(target, link, false); err != nil {
-			return fmt.Errorf("link rule %s for %s: %w", name, t, err)
+		link := p.RulesDir(scope)
+		if err := replaceTreeBridge(target, link); err != nil {
+			return fmt.Errorf("rules bridge for %s: %w", t, err)
 		}
 		fmt.Printf("linked %s → %s\n", link, target)
 	}
@@ -360,7 +363,7 @@ func linkDocForPlatforms(scope, name string, targets []string) error {
 func linkSkillsBridge(scope string) error {
 	target := skillsDir(scope)
 	link := filepath.Join(agent.SharedAgentsRoot(scope), "skills")
-	if err := replaceLink(target, link, true); err != nil {
+	if err := replaceTreeBridge(target, link); err != nil {
 		return fmt.Errorf("skills bridge: %w", err)
 	}
 	fmt.Printf("linked %s → %s\n", link, target)

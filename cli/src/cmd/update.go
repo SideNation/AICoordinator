@@ -232,7 +232,6 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		declared, ok := manifest.RuleVersion(name)
 		if !ok {
 			if confirmRemoval("rule", name, rec.Scope) {
-				removeRuleFromPlatforms(rec.Scope, name, platforms)
 				target := filepath.Join(rulesDir(rec.Scope), name+".md")
 				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 					return rec, fmt.Errorf("remove %s: %w", target, err)
@@ -255,10 +254,12 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		if err := copyFile(ruleSrc, ruleDst); err != nil {
 			return rec, err
 		}
-		if err := linkRuleForPlatforms(rec.Scope, name, platforms); err != nil {
+		newRules[name] = declared
+	}
+	if len(newRules) > 0 && agent.HasNonClaude(platforms) {
+		if err := linkRulesBridge(rec.Scope, platforms); err != nil {
 			return rec, err
 		}
-		newRules[name] = declared
 	}
 
 	rec.Agents = nilIfEmpty(newAgents)
@@ -294,21 +295,6 @@ func removeDocFromPlatforms(scope, name string, platforms []string) {
 			continue
 		}
 		os.Remove(filepath.Join(p.DocsDir(scope), name))
-	}
-}
-
-// removeRuleFromPlatforms deletes the per-platform rule symlinks. Missing
-// symlinks are ignored.
-func removeRuleFromPlatforms(scope, name string, platforms []string) {
-	for _, pn := range platforms {
-		if pn == "claude" {
-			continue
-		}
-		p, ok := agent.ResolvePlatform(pn)
-		if !ok {
-			continue
-		}
-		os.Remove(filepath.Join(p.RulesDir(scope), name+".md"))
 	}
 }
 

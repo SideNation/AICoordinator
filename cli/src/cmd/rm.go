@@ -233,18 +233,9 @@ func removeItem(rec *config.InstallRecord, kind, name string) error {
 		}
 		return removeIfExists(filepath.Join(docsDir(rec.Scope), name))
 	case "rule":
-		for _, pn := range platforms {
-			if pn == "claude" {
-				continue
-			}
-			p, ok := agent.ResolvePlatform(pn)
-			if !ok {
-				continue
-			}
-			if err := removeIfExists(filepath.Join(p.RulesDir(rec.Scope), name+".md")); err != nil {
-				return err
-			}
-		}
+		// Rules are shared via a single directory symlink per non-Claude
+		// platform — deleting the Claude file removes it from every
+		// platform's view at once.
 		return removeIfExists(filepath.Join(rulesDir(rec.Scope), name+".md"))
 	}
 	return nil

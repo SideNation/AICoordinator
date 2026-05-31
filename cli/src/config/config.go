@@ -18,9 +18,10 @@ import (
 )
 
 type Rc struct {
-	InitDir  string `yaml:"init_dir"`            // directory where `aico init` was run
-	CloneDir string `yaml:"clone_dir"`           // absolute path to cloned package repo
-	GitURL   string `yaml:"git_url,omitempty"`   // git remote url used for clone
+	InitDir  string                       `yaml:"init_dir"`            // directory where `aico init` was run
+	CloneDir string                       `yaml:"clone_dir"`           // absolute path to cloned package repo
+	GitURL   string                       `yaml:"git_url,omitempty"`   // git remote url used for clone
+	Models   map[string]map[string]string `yaml:"models,omitempty"`    // platform -> tier -> model id overrides
 }
 
 // InstallRecord describes one install destination tracked in .lock.
