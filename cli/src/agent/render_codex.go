@@ -26,7 +26,7 @@ func renderCodex(src *Source) ([]byte, []string, error) {
 		doc.set("model", modelForPlatform(src.Model, "codex"))
 	}
 	if src.Effort != "" {
-		doc.set("reasoningEffort", strings.ToLower(src.Effort))
+		doc.set("reasoningEffort", effortForPlatform(src.Effort, "codex"))
 	}
 	if len(src.Tools) > 0 {
 		doc.set("tools", src.Tools)

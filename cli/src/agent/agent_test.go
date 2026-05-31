@@ -105,7 +105,8 @@ func TestValidateEffort(t *testing.T) {
 		"low":    true,
 		"medium": true,
 		"high":   true,
-		"max":    false,
+		"xhigh":  true,
+		"max":    true,
 		"x":      false,
 	}
 	for v, ok := range cases {
@@ -210,8 +211,8 @@ func TestRenderOpencodeModelMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(out)
-	if !strings.Contains(body, "model: anthropic/claude-opus-4-7") {
-		t.Errorf("expected opencode opus model, got:\n%s", body)
+	if !strings.Contains(body, "model: openai/gpt-5.5") {
+		t.Errorf("expected opencode high model, got:\n%s", body)
 	}
 	if !strings.Contains(body, "color: \"#3b82f6\"") {
 		t.Errorf("expected hex color for blue")

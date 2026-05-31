@@ -25,11 +25,14 @@ var rejectedModelAliases = map[string]string{
 
 // Allowed common effort values. Renderers may still warn if a specific
 // platform does not support a given value.
+// xhigh: all platforms. max: claude only — non-claude renderers substitute xhigh.
 var allowedEfforts = map[string]struct{}{
 	"":       {}, // unset
 	"low":    {},
 	"medium": {},
 	"high":   {},
+	"xhigh":  {},
+	"max":    {},
 }
 
 // Validate runs source-level checks shared across all platforms. Returns an
@@ -58,7 +61,7 @@ func Validate(src *Source) error {
 		key := strings.ToLower(strings.TrimSpace(src.Effort))
 		if _, ok := allowedEfforts[key]; !ok {
 			errs = append(errs, fmt.Sprintf(
-				"invalid effort %q: allowed values are low, medium, high", src.Effort))
+				"invalid effort %q: allowed values are low, medium, high, xhigh, max", src.Effort))
 		}
 	}
 

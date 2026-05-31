@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
 	"github.com/spf13/cobra"
 )
@@ -69,6 +70,7 @@ func runInit() error {
 		InitDir:  cwd,
 		CloneDir: cloneDir,
 		GitURL:   gitURL,
+		Models:   agent.DefaultModelMaps(),
 	}
 	if err := config.SaveRc(rc); err != nil {
 		return fmt.Errorf("save .aicorc: %w", err)

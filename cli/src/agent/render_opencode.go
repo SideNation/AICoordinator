@@ -20,7 +20,7 @@ func renderOpencode(src *Source) ([]byte, []string, error) {
 		f.set("model", modelForPlatform(src.Model, "opencode"))
 	}
 	if src.Effort != "" {
-		f.set("effort", strings.ToLower(src.Effort))
+		f.set("effort", effortForPlatform(src.Effort, "opencode"))
 	}
 	if len(src.Tools) > 0 {
 		f.set("tools", toolsMap(src.Tools))

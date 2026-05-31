@@ -27,17 +27,46 @@ var codexModelMap = map[string]string{
 
 // opencodeModelMap maps the common tier to the opencode provider/model id.
 var opencodeModelMap = map[string]string{
-	"high":   "anthropic/claude-opus-4-7",
-	"medium": "anthropic/claude-sonnet-4-6",
-	"low":    "anthropic/claude-haiku-4-5-20251001",
+	"high":   "openai/gpt-5.5",
+	"medium": "openai/gpt-5.3-codex",
+	"low":    "openai/gpt-5.4-mini",
 }
 
-// kiloModelMap reuses the opencode provider ids — Kilo accepts
-// provider/model-id strings, same as opencode.
+// kiloModelMap maps the common tier to the kilo provider/model id.
 var kiloModelMap = map[string]string{
-	"high":   "anthropic/claude-opus-4-7",
-	"medium": "anthropic/claude-sonnet-4-6",
-	"low":    "anthropic/claude-haiku-4-5-20251001",
+	"high":   "openai/gpt-5.5",
+	"medium": "openai/gpt-5.3-codex",
+	"low":    "openai/gpt-5.4-mini",
+}
+
+// modelOverrides holds per-platform tier → model-id overrides loaded from
+// ~/.aico/.aicorc. Takes precedence over the built-in maps above.
+var modelOverrides map[string]map[string]string
+
+// SetModelOverrides installs runtime overrides sourced from config. Call once
+// at startup. nil clears any previously set overrides.
+func SetModelOverrides(overrides map[string]map[string]string) {
+	modelOverrides = overrides
+}
+
+// DefaultModelMaps returns a copy of the built-in tier→model-id maps for all
+// platforms. Suitable for writing into a freshly created config file so users
+// can see and edit the defaults without having to look them up.
+func DefaultModelMaps() map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for platform, m := range map[string]map[string]string{
+		"claude":    claudeModelMap,
+		"codex":     codexModelMap,
+		"opencode":  opencodeModelMap,
+		"kilo":      kiloModelMap,
+	} {
+		pm := make(map[string]string, len(m))
+		for k, v := range m {
+			pm[k] = v
+		}
+		out[platform] = pm
+	}
+	return out
 }
 
 var colorNameToHex = map[string]string{
@@ -56,12 +85,30 @@ func colorHex(name string) (string, bool) {
 	return hx, ok
 }
 
+// effortForPlatform normalises an effort value for a target platform.
+// "max" is claude-only; non-claude platforms receive "xhigh" instead.
+func effortForPlatform(effort, platform string) string {
+	e := strings.ToLower(strings.TrimSpace(effort))
+	if e == "max" && platform != "claude" {
+		return "xhigh"
+	}
+	return e
+}
+
 // modelForPlatform translates the common tier into a platform-specific model
-// id. Returns "" when the tier is unknown (Validate should have caught that).
+// id. Config overrides take precedence over the built-in maps.
+// Returns "" when the tier is unknown (Validate should have caught that).
 func modelForPlatform(tier, platform string) string {
 	tier = strings.ToLower(strings.TrimSpace(tier))
 	if tier == "" {
 		return ""
+	}
+	if modelOverrides != nil {
+		if pm, ok := modelOverrides[platform]; ok {
+			if id, ok := pm[tier]; ok {
+				return id
+			}
+		}
 	}
 	switch platform {
 	case "claude":
