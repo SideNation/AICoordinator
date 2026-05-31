@@ -87,6 +87,50 @@ func replaceLink(target, link string, isDir bool) error {
 	return createFileLink(target, link)
 }
 
+// replaceTreeBridge installs a directory symlink at `link` pointing to
+// `target`, replacing whatever is there as long as it is safe to do so:
+//
+//   - missing: just create the link
+//   - existing symlink / junction: drop it and re-link
+//   - existing directory containing ONLY symlinks (the old per-file layout
+//     we used for rules): wipe it and re-link
+//   - existing directory with real files: refuse, to avoid clobbering user
+//     content
+//
+// This lets a user migrate from the previous per-file bridge to the new
+// directory-level bridge without manual cleanup.
+func replaceTreeBridge(target, link string) error {
+	info, err := os.Lstat(link)
+	switch {
+	case err == nil && (info.Mode()&os.ModeSymlink != 0 || isJunction(link)):
+		if err := os.Remove(link); err != nil {
+			return fmt.Errorf("remove existing link %s: %w", link, err)
+		}
+	case err == nil && info.IsDir():
+		entries, readErr := os.ReadDir(link)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", link, readErr)
+		}
+		for _, e := range entries {
+			ei, _ := e.Info()
+			if ei == nil || ei.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("%s contains real files; refusing to replace with a symlink", link)
+			}
+		}
+		if err := os.RemoveAll(link); err != nil {
+			return fmt.Errorf("remove %s: %w", link, err)
+		}
+	case err == nil:
+		return fmt.Errorf("%s exists and is not a symlink or directory; refusing to overwrite", link)
+	case !os.IsNotExist(err):
+		return fmt.Errorf("stat %s: %w", link, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(link), err)
+	}
+	return createDirLink(target, link)
+}
+
 // isJunction returns true on Windows when the path is a directory junction
 // (which Lstat does not flag as a symlink). On Unix it is always false.
 func isJunction(path string) bool {
