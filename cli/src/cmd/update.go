@@ -157,6 +157,12 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		newAgents[name] = declared
 	}
 
+	if len(newAgents) > 0 && agent.HasNonClaude(platforms) {
+		if err := linkAgentsDirForPlatforms(rec.Scope, platforms); err != nil {
+			return rec, err
+		}
+	}
+
 	// ----- skills -----
 	newSkills := map[string]string{}
 	for name, locked := range rec.Skills {
@@ -298,19 +304,15 @@ func removeDocFromPlatforms(scope, name string, platforms []string) {
 	}
 }
 
-// removeAgentFromPlatforms deletes the installed agent file from every
-// tracked platform. Both the platform-native rendered path (.toml for Codex
-// etc.) and the symlink path (which always uses Claude's .md filename) are
-// removed because either could exist depending on the agent's useonly.
+// removeAgentFromPlatforms deletes the agent file from Claude's agents dir.
+// Non-Claude platforms share the same dir via a directory symlink, so removing
+// Claude's file is sufficient.
 func removeAgentFromPlatforms(scope, name string, platforms []string) {
-	for _, pn := range platforms {
-		p, ok := agent.ResolvePlatform(pn)
-		if !ok {
-			continue
-		}
-		os.Remove(p.Path(scope, name))
-		os.Remove(p.LinkedAgentPath(scope, name))
+	claude, ok := agent.ResolvePlatform("claude")
+	if !ok {
+		return
 	}
+	os.Remove(claude.Path(scope, name))
 }
 
 // confirmRemoval prompts the user before deleting an item that no longer
