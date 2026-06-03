@@ -142,6 +142,11 @@ func doInstall(src, scope string, targets []string, docsReq []string, manifest *
 			sum.agents[name] = entry.Version
 		}
 	}
+	if len(sum.agents) > 0 && agent.HasNonClaude(targets) {
+		if err := linkAgentsDirForPlatforms(scope, targets); err != nil {
+			return nil, err
+		}
+	}
 
 	for name, entry := range manifest.Skills {
 		skillSrc := filepath.Join(src, "skills", name)
@@ -269,50 +274,59 @@ func installAgentFromSource(srcPath, scope string, targets []string) (bool, erro
 		wrote = true
 	}
 
-	for _, name := range picked {
-		if name == "claude" {
+	if !claudeIncluded {
+		// Claude was excluded (useonly=<non-claude platform>) — render the
+		// platform's native file directly into Claude's agents dir so the
+		// directory-level link still exposes it to that platform.
+		for _, name := range picked {
+			if name == "claude" {
+				continue
+			}
+			p, ok := agent.ResolvePlatform(name)
+			if !ok {
+				continue
+			}
+			data, warns, err := p.Render(src)
+			if err != nil {
+				return wrote, fmt.Errorf("render %s for %s: %w", srcPath, name, err)
+			}
+			for _, w := range warns {
+				fmt.Fprintf(os.Stderr, "warning [%s -> %s]: %s\n", src.Name, name, w)
+			}
+			dst := claude.Path(scope, src.Name)
+			if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+				return wrote, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+			}
+			if err := os.WriteFile(dst, data, 0644); err != nil {
+				return wrote, fmt.Errorf("write %s: %w", dst, err)
+			}
+			fmt.Printf("installed %s → %s\n", srcPath, dst)
+			wrote = true
+		}
+	}
+	return wrote, nil
+}
+
+// linkAgentsDirForPlatforms creates one directory symlink per non-Claude
+// target from <platform>/agents/ → .claude/agents/ so all platforms share
+// the same agents tree without per-file bookkeeping.
+func linkAgentsDirForPlatforms(scope string, targets []string) error {
+	target := agentsDir(scope)
+	for _, t := range targets {
+		if t == "claude" {
 			continue
 		}
-		p, ok := agent.ResolvePlatform(name)
+		p, ok := agent.ResolvePlatform(t)
 		if !ok {
 			continue
 		}
-		if claudeIncluded {
-			// Symlink the platform's file to Claude's canonical .md so all
-			// platforms share one source of truth. The symlink keeps the
-			// agent name; we deliberately reuse Claude's .md extension
-			// rather than the platform's native one so the symlink target
-			// is unambiguous.
-			linkPath := p.LinkedAgentPath(scope, src.Name)
-			target := claude.Path(scope, src.Name)
-			if err := replaceLink(target, linkPath, false); err != nil {
-				return wrote, fmt.Errorf("link %s -> %s: %w", linkPath, target, err)
-			}
-			fmt.Printf("linked %s → %s\n", linkPath, target)
-			wrote = true
-			continue
+		link := p.AgentsDir(scope)
+		if err := replaceTreeBridge(target, link); err != nil {
+			return fmt.Errorf("agents dir bridge for %s: %w", t, err)
 		}
-		// Claude was excluded (useonly=<this platform>) — render the
-		// platform's native file directly so the agent still has somewhere
-		// to live.
-		data, warns, err := p.Render(src)
-		if err != nil {
-			return wrote, fmt.Errorf("render %s for %s: %w", srcPath, name, err)
-		}
-		for _, w := range warns {
-			fmt.Fprintf(os.Stderr, "warning [%s -> %s]: %s\n", src.Name, name, w)
-		}
-		dst := p.Path(scope, src.Name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return wrote, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-		}
-		if err := os.WriteFile(dst, data, 0644); err != nil {
-			return wrote, fmt.Errorf("write %s: %w", dst, err)
-		}
-		fmt.Printf("installed %s → %s\n", srcPath, dst)
-		wrote = true
+		fmt.Printf("linked %s → %s\n", link, target)
 	}
-	return wrote, nil
+	return nil
 }
 
 // linkRulesBridge creates one directory symlink per non-Claude target so the
@@ -532,6 +546,13 @@ func copyFile(src, dst string) error {
 }
 
 // ---------- path helpers for Claude-canonical content ----------
+
+func agentsDir(scope string) string {
+	if scope == "user" {
+		return filepath.Join(homeDir(), ".claude", "agents")
+	}
+	return filepath.Join(".claude", "agents")
+}
 
 func skillsDir(scope string) string {
 	if scope == "user" {
