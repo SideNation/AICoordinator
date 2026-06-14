@@ -81,9 +81,10 @@ func runInit() error {
 }
 
 // repoName derives a directory name from a git URL.
-//   git@github.com:acme/aico-packages.git → aico-packages
-//   https://github.com/acme/aico-packages.git → aico-packages
-//   https://example.com/foo/bar → bar
+//
+//	git@github.com:acme/aico-packages.git → aico-packages
+//	https://github.com/acme/aico-packages.git → aico-packages
+//	https://example.com/foo/bar → bar
 func repoName(gitURL string) string {
 	s := strings.TrimSpace(gitURL)
 	// strip trailing slash

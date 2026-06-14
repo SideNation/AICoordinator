@@ -277,6 +277,17 @@ func HasNonClaude(targets []string) bool {
 	return false
 }
 
+// HasClaude reports whether the given canonical target list includes claude —
+// used to gate Claude-only assets (rules/hooks) and the Claude sidecar.
+func HasClaude(targets []string) bool {
+	for _, t := range targets {
+		if t == "claude" {
+			return true
+		}
+	}
+	return false
+}
+
 // EnsureClaude returns a target list that always includes "claude". The
 // install/update flows treat Claude as the canonical destination; other
 // platforms get symlinks pointing back to Claude's files.

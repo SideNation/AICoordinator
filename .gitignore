@@ -4,3 +4,5 @@ cli/bin
 .claude/skills
 .claude/docs
 .claude/settings.json
+packages/
+manifest.yaml

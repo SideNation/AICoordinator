@@ -17,10 +17,10 @@ var allowedModels = map[string]struct{}{
 // Legacy aliases that used to be accepted; we reject them now with a clear
 // message so old sources fail fast instead of silently picking a default.
 var rejectedModelAliases = map[string]string{
-	"opus":    "use model: high",
-	"sonnet":  "use model: medium",
-	"haiku":   "use model: low",
-	"midium":  "typo for medium — use model: medium",
+	"opus":   "use model: high",
+	"sonnet": "use model: medium",
+	"haiku":  "use model: low",
+	"midium": "typo for medium — use model: medium",
 }
 
 // Allowed common effort values. Renderers may still warn if a specific

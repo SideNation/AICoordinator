@@ -1,10 +1,11 @@
 // Package config manages the user-global aico configuration under ~/.aico/.
 //
 // Layout:
-//   ~/.aico/
-//     .aicorc   — YAML: init_dir, clone_dir, git_url
-//     .lock     — YAML: list of install records
-//     packages/ — git-cloned package repo (contains packages/ subdir)
+//
+//	~/.aico/
+//	  .aicorc   — YAML: init_dir, clone_dir, git_url
+//	  .lock     — YAML: list of install records
+//	  packages/ — git-cloned package repo (contains packages/ subdir)
 package config
 
 import (
@@ -12,91 +13,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Rc struct {
-	InitDir  string                       `yaml:"init_dir"`            // directory where `aico init` was run
-	CloneDir string                       `yaml:"clone_dir"`           // absolute path to cloned package repo
-	GitURL   string                       `yaml:"git_url,omitempty"`   // git remote url used for clone
-	Models   map[string]map[string]string `yaml:"models,omitempty"`    // platform -> tier -> model id overrides
+	InitDir  string                       `yaml:"init_dir"`          // directory where `aico init` was run
+	CloneDir string                       `yaml:"clone_dir"`         // absolute path to cloned package repo
+	GitURL   string                       `yaml:"git_url,omitempty"` // git remote url used for clone
+	Models   map[string]map[string]string `yaml:"models,omitempty"`  // platform -> tier -> model id overrides
 }
 
 // InstallRecord describes one install destination tracked in .lock.
-// Agents, Skills, Docs, and Rules map each installed item's name to the
-// manifest version it was installed from. Empty version means "installed
-// before manifest-based tracking existed."
+// Plugins maps each installed plugin's name to the manifest version it was
+// installed from; Docs does the same for remote docs. InitDone lists the
+// plugins whose _init scaffold has already been applied (so update and repeat
+// installs do not re-copy it).
 type InstallRecord struct {
-	Path    string            `yaml:"path"`              // absolute install directory (project root or user home)
-	Scope   string            `yaml:"scope"`             // "project" | "user"
-	Target  string            `yaml:"target"`            // "claude" | "opencode" | "all"
-	Agents  map[string]string `yaml:"agents,omitempty"`  // agent name -> manifest version
-	Skills  map[string]string `yaml:"skills,omitempty"`  // skill name -> manifest version
-	Docs    map[string]string `yaml:"docs,omitempty"`    // doc name -> manifest version
-	Rules   map[string]string `yaml:"rules,omitempty"`   // rule name -> manifest version
-	Version string            `yaml:"version,omitempty"` // package repo commit hash at install time
-}
-
-// UnmarshalYAML accepts legacy forms of `docs`:
-//   - `docs: true/false` (ancient bool form)
-//   - `docs: [name, ...]` (list form)
-// and the current map form `docs: {name: version}`. Legacy entries are
-// migrated to the map with an empty version string.
-func (r *InstallRecord) UnmarshalYAML(node *yaml.Node) error {
-	type rawMap struct {
-		Path    string            `yaml:"path"`
-		Scope   string            `yaml:"scope"`
-		Target  string            `yaml:"target"`
-		Agents  map[string]string `yaml:"agents,omitempty"`
-		Skills  map[string]string `yaml:"skills,omitempty"`
-		Docs    map[string]string `yaml:"docs,omitempty"`
-		Rules   map[string]string `yaml:"rules,omitempty"`
-		Version string            `yaml:"version,omitempty"`
-	}
-	type rawList struct {
-		Path    string   `yaml:"path"`
-		Scope   string   `yaml:"scope"`
-		Target  string   `yaml:"target"`
-		Docs    []string `yaml:"docs,omitempty"`
-		Version string   `yaml:"version,omitempty"`
-	}
-	type rawBool struct {
-		Path    string `yaml:"path"`
-		Scope   string `yaml:"scope"`
-		Target  string `yaml:"target"`
-		Docs    bool   `yaml:"docs"`
-		Version string `yaml:"version,omitempty"`
-	}
-
-	var m rawMap
-	if err := node.Decode(&m); err == nil {
-		r.Path, r.Scope, r.Target = m.Path, m.Scope, m.Target
-		r.Agents, r.Skills, r.Docs, r.Rules = m.Agents, m.Skills, m.Docs, m.Rules
-		r.Version = m.Version
-		return nil
-	}
-	var list rawList
-	if err := node.Decode(&list); err == nil {
-		r.Path, r.Scope, r.Target, r.Version = list.Path, list.Scope, list.Target, list.Version
-		if list.Docs != nil {
-			r.Docs = map[string]string{}
-			for _, name := range list.Docs {
-				r.Docs[name] = ""
-			}
-		}
-		return nil
-	}
-	var b rawBool
-	if err := node.Decode(&b); err != nil {
-		return err
-	}
-	r.Path, r.Scope, r.Target, r.Version = b.Path, b.Scope, b.Target, b.Version
-	if b.Docs {
-		r.Docs = map[string]string{}
-	}
-	return nil
+	Path     string            `yaml:"path"`               // absolute install directory (project root or user home)
+	Scope    string            `yaml:"scope"`              // "project" | "user"
+	Target   string            `yaml:"target"`             // "claude" | "opencode" | "all"
+	Plugins  map[string]string `yaml:"plugins,omitempty"`  // plugin name -> manifest version
+	Docs     map[string]string `yaml:"docs,omitempty"`     // doc name -> manifest version
+	InitDone []string          `yaml:"initdone,omitempty"` // plugins whose _init scaffold was applied
+	Version  string            `yaml:"version,omitempty"`  // package repo commit hash at install time
 }
 
 type Lock struct {
@@ -270,21 +212,32 @@ func PackagesDir(cloneDir string) string {
 	return filepath.Join(cloneDir, "packages")
 }
 
-// ManifestEntry holds the declared version of a single agent/skill/doc.
-// Source is optional — when set, it overrides the default packages/<kind>/<name>
-// lookup path. Relative source paths are resolved against the clone root.
+// ManifestEntry holds the declared version of a remote doc. Source is the
+// upstream URL or a packages-relative path.
 type ManifestEntry struct {
 	Source  string `yaml:"source,omitempty"`
 	Version string `yaml:"version"`
 }
 
-// Manifest declares the authoritative version for each packaged item.
-// Lives at <clone_dir>/manifest.yaml and is edited by humans.
+// PluginEntry is one plugin declared in the root manifest. Source is the
+// folder name under packages/plugins/. Alias lists alternative names accepted
+// on the command line. Chain lists other plugins to install alongside this
+// one. Target restricts which platforms the plugin installs to — even when the
+// user passes --target all. Version mirrors the plugin's _meta.meta SemVer.
+type PluginEntry struct {
+	Source  string   `yaml:"source,omitempty"`
+	Alias   []string `yaml:"alias,omitempty"`
+	Chain   []string `yaml:"chain,omitempty"`
+	Target  []string `yaml:"target,omitempty"`
+	Version string   `yaml:"version"`
+}
+
+// Manifest declares the authoritative plugin set and remote docs. The root
+// manifest.yaml is the single source of truth for plugin definitions
+// (alias/chain/target) and versions; it is edited by humans and the CLI.
 type Manifest struct {
-	Agents map[string]ManifestEntry `yaml:"agents,omitempty"`
-	Skills map[string]ManifestEntry `yaml:"skills,omitempty"`
-	Docs   map[string]ManifestEntry `yaml:"docs,omitempty"`
-	Rules  map[string]ManifestEntry `yaml:"rules,omitempty"`
+	Plugins map[string]PluginEntry   `yaml:"plugins,omitempty"`
+	Docs    map[string]ManifestEntry `yaml:"docs,omitempty"`
 }
 
 // ManifestPath returns the expected path of the manifest file for a given
@@ -309,30 +262,53 @@ func LoadManifest(cloneDir string) (*Manifest, error) {
 	return &m, nil
 }
 
-// AgentVersion returns the declared version for an agent, or "" if missing.
-func (m *Manifest) AgentVersion(name string) (string, bool) {
-	e, ok := m.Agents[name]
-	return e.Version, ok
-}
-
-// AgentSource returns the resolved on-disk path of the single-source agent
-// markdown for `name`, given the clone root. When manifest.source is set it
-// wins; otherwise we default to <cloneDir>/packages/agents/<name>.md.
-// Relative manifest.source values are resolved against cloneDir.
-func (m *Manifest) AgentSource(cloneDir, name string) string {
-	if e, ok := m.Agents[name]; ok && e.Source != "" {
-		if filepath.IsAbs(e.Source) {
-			return e.Source
-		}
-		return filepath.Join(cloneDir, e.Source)
+// ResolvePlugin maps a name or alias (case-insensitive) to the canonical
+// plugin name and its entry. Returns ok=false when the token matches nothing.
+func (m *Manifest) ResolvePlugin(token string) (string, PluginEntry, bool) {
+	key := strings.ToLower(strings.TrimSpace(token))
+	if key == "" {
+		return "", PluginEntry{}, false
 	}
-	return filepath.Join(PackagesDir(cloneDir), "agents", name+".md")
+	if e, ok := m.Plugins[key]; ok {
+		return key, e, true
+	}
+	for name, e := range m.Plugins {
+		if strings.ToLower(name) == key {
+			return name, e, true
+		}
+		for _, a := range e.Alias {
+			if strings.ToLower(strings.TrimSpace(a)) == key {
+				return name, e, true
+			}
+		}
+	}
+	return "", PluginEntry{}, false
 }
 
-// SkillVersion returns the declared version for a skill, or "" if missing.
-func (m *Manifest) SkillVersion(name string) (string, bool) {
-	e, ok := m.Skills[name]
+// PluginNames returns every declared plugin name, sorted.
+func (m *Manifest) PluginNames() []string {
+	out := make([]string, 0, len(m.Plugins))
+	for n := range m.Plugins {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PluginVersion returns the declared version for a plugin, or "" if missing.
+func (m *Manifest) PluginVersion(name string) (string, bool) {
+	e, ok := m.Plugins[name]
 	return e.Version, ok
+}
+
+// PluginDir returns the on-disk folder for a plugin under packages/plugins/.
+// It uses the entry's source folder name when set, else the plugin name.
+func (m *Manifest) PluginDir(cloneDir, name string) string {
+	folder := name
+	if e, ok := m.Plugins[name]; ok && e.Source != "" {
+		folder = e.Source
+	}
+	return filepath.Join(PackagesDir(cloneDir), "plugins", folder)
 }
 
 // DocVersion returns the declared version for a doc, or "" if missing.
@@ -341,8 +317,18 @@ func (m *Manifest) DocVersion(name string) (string, bool) {
 	return e.Version, ok
 }
 
-// RuleVersion returns the declared version for a rule, or "" if missing.
-func (m *Manifest) RuleVersion(name string) (string, bool) {
-	e, ok := m.Rules[name]
-	return e.Version, ok
+// PluginMetaVersion reads the SemVer from a plugin folder's _meta.meta.
+// Returns "" when the file is missing or has no version field.
+func PluginMetaVersion(pluginDir string) string {
+	data, err := os.ReadFile(filepath.Join(pluginDir, "_meta.meta"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Version string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return m.Version
 }

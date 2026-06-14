@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
@@ -14,378 +15,446 @@ import (
 )
 
 var installCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Install agents, skills, and (optionally) docs into project or user environment",
+	Use:   "install [plugin...]",
+	Short: "Install plugins (agents, skills, docs, rules, hooks, platform sidecars)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInstall(cmd)
+		return runInstall(args)
 	},
 }
 
 var (
 	flagGlobal bool   // true = user scope (home), false = project scope (cwd)
 	flagTarget string // comma list of platform names/aliases, or "all"
-	flagDocs   string // "" = none, "*" = all, "a,b,c" = selected
+	flagAll    bool   // install every plugin in the manifest
 	flagSrc    string // override packages source root
 )
 
 func init() {
 	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.codex, ~/.config/...) instead of current project")
-	installCmd.Flags().StringVar(&flagTarget, "target", "all", "agent target list: comma-separated values from claude|cl, codex|co, kilo|ki, opencode|op, or all. claude is always installed")
-	installCmd.Flags().StringVar(&flagDocs, "docs", "", "install docs: comma-separated names, or empty (= all when flag present, skip when absent)")
-	// allow bare `--docs` (no value) to mean "all docs"
-	installCmd.Flags().Lookup("docs").NoOptDefVal = "*"
+	installCmd.Flags().StringVar(&flagTarget, "target", "all", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all")
+	installCmd.Flags().BoolVar(&flagAll, "all", false, "install every plugin declared in the manifest")
 	installCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
 
-func runInstall(cmd *cobra.Command) error {
+func runInstall(args []string) error {
 	src, err := resolvePackagesSrc()
 	if err != nil {
 		return err
 	}
-
-	manifest, err := loadManifestForSrc(src)
+	cloneDir := filepath.Dir(src)
+	manifest, err := config.LoadManifest(cloneDir)
 	if err != nil {
 		return err
 	}
 
-	targets, err := agent.ParseTargetSpec(flagTarget)
+	cliTargets, err := agent.ParseTargetSpec(flagTarget)
 	if err != nil {
 		return err
 	}
-	// Claude is always part of the install — it's the canonical destination
-	// every other platform symlinks back to.
-	targets = agent.EnsureClaude(targets)
+
+	names, err := resolveRequestedPlugins(manifest, args, flagAll)
+	if err != nil {
+		return err
+	}
+	if names == nil {
+		return nil // picker message already printed
+	}
+	names = expandChains(manifest, names)
 
 	scope := scopeFromGlobal(flagGlobal)
-	docsReq := parseSelectFlag(cmd, "docs", flagDocs, manifestDocsNames(manifest))
-	summary, err := doInstall(src, scope, targets, docsReq, manifest)
+	lock, err := config.LoadLock()
 	if err != nil {
 		return err
 	}
-	return recordInstall(src, scope, targets, summary)
-}
+	rec := loadOrNewRecord(lock, scope, cliTargets)
 
-// installSummary captures which items were installed and their manifest versions,
-// so the .lock can be updated with per-item version tracking.
-type installSummary struct {
-	agents map[string]string // name -> version
-	skills map[string]string
-	docs   map[string]string
-	rules  map[string]string
-}
-
-// loadManifestForSrc resolves the clone dir that contains `src` (its parent,
-// since src = <clone_dir>/packages) and loads manifest.yaml from there.
-func loadManifestForSrc(src string) (*config.Manifest, error) {
-	cloneDir := filepath.Dir(src)
-	return config.LoadManifest(cloneDir)
-}
-
-// scopeFromGlobal maps the -g/--global bool flag to the internal scope string.
-func scopeFromGlobal(global bool) string {
-	if global {
-		return "user"
+	for _, name := range names {
+		entry := manifest.Plugins[name]
+		targets := effectiveTargets(cliTargets, entry.Target)
+		if len(targets) == 0 {
+			fmt.Printf("skipped %s (no enabled targets match plugin target=%v)\n", name, entry.Target)
+			continue
+		}
+		ver, err := installPlugin(manifest, cloneDir, name, scope, targets, &rec)
+		if err != nil {
+			return err
+		}
+		if rec.Plugins == nil {
+			rec.Plugins = map[string]string{}
+		}
+		rec.Plugins[name] = ver
 	}
-	return "project"
+
+	rec.Version = gitCommit(repoRoot(src))
+	lock.Upsert(rec)
+	return config.SaveLock(lock)
 }
 
-// parseSelectFlag translates a comma-list flag (--docs, --rules) into a list
-// of names to install. Returns nil when the flag was not set, meaning "skip".
-// When the flag is set with no value (or "*"), returns every name in `all`.
-func parseSelectFlag(cmd *cobra.Command, flagName, value string, all []string) []string {
-	if !cmd.Flags().Changed(flagName) {
-		return nil
+// ---------------------------------------------------------------------------
+// plugin selection
+// ---------------------------------------------------------------------------
+
+// resolveRequestedPlugins turns CLI args / --all into a list of canonical
+// plugin names. Returns (nil, nil) after printing the picker when neither a
+// name nor --all was given.
+func resolveRequestedPlugins(m *config.Manifest, args []string, all bool) ([]string, error) {
+	if all {
+		return m.PluginNames(), nil
 	}
-	if value == "*" || strings.TrimSpace(value) == "" {
-		out := make([]string, 0, len(all))
-		out = append(out, all...)
-		return out
+	if len(args) == 0 {
+		printPluginPicker(m)
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range args {
+		name, _, ok := m.ResolvePlugin(a)
+		if !ok {
+			return nil, fmt.Errorf("unknown plugin %q — run `aico list` to see available plugins", a)
+		}
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+func printPluginPicker(m *config.Manifest) {
+	fmt.Println("플러그인 이름을 지정하세요.  예) aico install <name>   또는   aico install --all")
+	fmt.Println("설치 가능한 플러그인:")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, n := range m.PluginNames() {
+		e := m.Plugins[n]
+		fmt.Fprintf(w, "  %s\t%s\t%s\n", n, e.Version, strings.Join(e.Alias, ", "))
+	}
+	w.Flush()
+}
+
+// expandChains returns names plus every plugin reachable through chain[],
+// deduplicated, with chained plugins ordered after the plugin that pulls them.
+func expandChains(m *config.Manifest, names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	var visit func(string)
+	visit = func(n string) {
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+		out = append(out, n)
+		if e, ok := m.Plugins[n]; ok {
+			for _, c := range e.Chain {
+				if cn, _, ok := m.ResolvePlugin(c); ok {
+					visit(cn)
+				}
+			}
+		}
+	}
+	for _, n := range names {
+		visit(n)
+	}
+	return out
+}
+
+// effectiveTargets intersects the user's --target selection with the plugin's
+// declared target list. An empty plugin target means "any platform", so the
+// CLI selection passes through unchanged.
+func effectiveTargets(cli, pluginTarget []string) []string {
+	if len(pluginTarget) == 0 {
+		return cli
+	}
+	allow := map[string]bool{}
+	for _, t := range pluginTarget {
+		if p, ok := agent.ResolvePlatform(t); ok {
+			allow[p.Name] = true
+		}
 	}
 	var out []string
-	for _, p := range strings.Split(value, ",") {
-		if s := strings.TrimSpace(p); s != "" {
-			out = append(out, s)
+	for _, t := range cli {
+		if allow[t] {
+			out = append(out, t)
 		}
 	}
 	return out
 }
 
-func manifestDocsNames(m *config.Manifest) []string {
-	out := make([]string, 0, len(m.Docs))
-	for n := range m.Docs {
-		out = append(out, n)
+func loadOrNewRecord(lock *config.Lock, scope string, cliTargets []string) config.InstallRecord {
+	installPath := scopeRoot(scope)
+	for _, r := range lock.Installs {
+		if r.Path == installPath && r.Scope == scope {
+			return r
+		}
 	}
-	return out
+	return config.InstallRecord{
+		Path:   installPath,
+		Scope:  scope,
+		Target: agent.FormatTargetList(cliTargets),
+	}
 }
 
-// doInstall writes the manifest contents to disk under Claude's canonical
-// directories and creates per-platform symlinks for every non-Claude target
-// in `targets`. Skills install only to .claude/skills; for non-Claude
-// targets we add a single .agents/skills bridge symlink so Codex/Kilo/
-// opencode can reach them.
-func doInstall(src, scope string, targets []string, docsReq []string, manifest *config.Manifest) (*installSummary, error) {
-	sum := &installSummary{
-		agents: map[string]string{},
-		skills: map[string]string{},
-		docs:   map[string]string{},
-		rules:  map[string]string{},
-	}
+// ---------------------------------------------------------------------------
+// per-plugin install
+// ---------------------------------------------------------------------------
 
-	cloneDir := filepath.Dir(src)
-	for name, entry := range manifest.Agents {
-		srcPath := manifest.AgentSource(cloneDir, name)
-		installed, err := installAgentFromSource(srcPath, scope, targets)
-		if err != nil {
-			return nil, err
-		}
-		if installed {
-			sum.agents[name] = entry.Version
-		}
-	}
-	if len(sum.agents) > 0 && agent.HasNonClaude(targets) {
-		if err := linkAgentsDirForPlatforms(scope, targets); err != nil {
-			return nil, err
-		}
-	}
-
-	for name, entry := range manifest.Skills {
-		skillSrc := filepath.Join(src, "skills", name)
-		if _, err := os.Stat(skillSrc); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: skill %q not found in package source, skipping\n", name)
-			continue
-		}
-		if err := installTree(skillSrc, filepath.Join(skillsDir(scope), name)); err != nil {
-			return nil, err
-		}
-		sum.skills[name] = entry.Version
-	}
-
-	if len(sum.skills) > 0 && agent.HasNonClaude(targets) {
-		if err := linkSkillsBridge(scope); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, name := range docsReq {
-		entry, ok := manifest.Docs[name]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "warning: doc %q not declared in manifest, skipping\n", name)
-			continue
-		}
-		docSrc := filepath.Join(src, "docs", name)
-		if _, err := os.Stat(docSrc); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: doc %q not found in package source, skipping\n", name)
-			continue
-		}
-		docDst := filepath.Join(docsDir(scope), name)
-		if _, err := os.Stat(docDst); err != nil {
-			if err := installTree(docSrc, docDst); err != nil {
-				return nil, err
-			}
-		} else {
-			fmt.Printf("docs: %s already installed, skipping copy\n", name)
-		}
-		if err := linkDocForPlatforms(scope, name, targets); err != nil {
-			return nil, err
-		}
-		sum.docs[name] = entry.Version
-	}
-
-	for name, entry := range manifest.Rules {
-		ruleSrc := filepath.Join(src, "rules", name+".md")
-		if _, err := os.Stat(ruleSrc); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: rule %q not found in package source, skipping\n", name)
-			continue
-		}
-		ruleDst := filepath.Join(rulesDir(scope), name+".md")
-		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
-		}
-		if err := copyFile(ruleSrc, ruleDst); err != nil {
-			return nil, err
-		}
-		fmt.Printf("installed %s → %s\n", ruleSrc, ruleDst)
-		sum.rules[name] = entry.Version
-	}
-	if len(sum.rules) > 0 && agent.HasNonClaude(targets) {
-		if err := linkRulesBridge(scope, targets); err != nil {
-			return nil, err
-		}
-	}
-	return sum, nil
-}
-
-// installAgentFromSource renders the Claude version of the agent to
-// .claude/agents/<name>.md and creates symlinks from every other selected
-// platform's agents directory pointing back to the Claude file.
-//
-// useonly still applies — if the source restricts itself to a single
-// non-Claude platform, we render that platform's file directly and skip the
-// Claude symlink target. Returns true when at least one file landed on disk.
-func installAgentFromSource(srcPath, scope string, targets []string) (bool, error) {
-	if _, err := os.Stat(srcPath); err != nil {
+// installPlugin materialises one plugin's assets for the given targets and
+// returns the version recorded in the lock (the plugin's _meta.meta SemVer,
+// falling back to the manifest version).
+func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []string, rec *config.InstallRecord) (string, error) {
+	pluginDir := m.PluginDir(cloneDir, name)
+	if _, err := os.Stat(pluginDir); err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "warning: agent source %q not found, skipping\n", srcPath)
-			return false, nil
+			return "", fmt.Errorf("plugin %q not found at %s", name, pluginDir)
 		}
-		return false, err
+		return "", err
 	}
+	fmt.Printf("→ installing plugin %s (targets=%s)\n", name, strings.Join(targets, ","))
 
-	src, err := agent.LoadFile(srcPath)
-	if err != nil {
-		return false, fmt.Errorf("load %s: %w", srcPath, err)
+	if err := installPluginAgents(pluginDir, scope, targets); err != nil {
+		return "", err
 	}
-	if err := agent.Validate(src); err != nil {
-		return false, err
+	if err := installPluginSkills(pluginDir, scope, targets); err != nil {
+		return "", err
 	}
-
-	picked := agent.EffectiveTargets(src, targets)
-	if len(picked) == 0 {
-		fmt.Printf("skipped %s (no enabled targets match useonly=%q)\n", srcPath, src.UseOnly)
-		return false, nil
+	if err := installPluginDocs(pluginDir, scope, targets); err != nil {
+		return "", err
 	}
-
-	claudeIncluded := false
-	for _, n := range picked {
-		if n == "claude" {
-			claudeIncluded = true
-			break
+	if agent.HasClaude(targets) {
+		// rules + hooks are Claude-only per PRD.
+		if err := copySubtreeIfExists(filepath.Join(pluginDir, "rules"), rulesDir(scope)); err != nil {
+			return "", err
+		}
+		if err := copySubtreeIfExists(filepath.Join(pluginDir, "hooks"), hooksDir(scope)); err != nil {
+			return "", err
 		}
 	}
+	for _, t := range targets {
+		p, ok := agent.ResolvePlatform(t)
+		if !ok {
+			continue
+		}
+		if err := installSidecar(pluginDir, p, scope); err != nil {
+			return "", err
+		}
+	}
 
-	wrote := false
-	claude, _ := agent.ResolvePlatform("claude")
-	if claudeIncluded {
-		data, warns, err := claude.Render(src)
+	// _init scaffold runs once per plugin, project scope only. Gentle copy
+	// (overwrite=false) so it never clobbers existing project files.
+	if scope == "project" && !containsStr(rec.InitDone, name) {
+		applied, err := applyInitTree(pluginDir, scopeRoot(scope), false)
 		if err != nil {
-			return wrote, fmt.Errorf("render %s for claude: %w", srcPath, err)
+			return "", err
 		}
-		for _, w := range warns {
-			fmt.Fprintf(os.Stderr, "warning [%s -> claude]: %s\n", src.Name, w)
+		if applied {
+			rec.InitDone = append(rec.InitDone, name)
 		}
-		dst := claude.Path(scope, src.Name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return wrote, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-		}
-		if err := os.WriteFile(dst, data, 0644); err != nil {
-			return wrote, fmt.Errorf("write %s: %w", dst, err)
-		}
-		fmt.Printf("installed %s → %s\n", srcPath, dst)
-		wrote = true
 	}
 
-	if !claudeIncluded {
-		// Claude was excluded (useonly=<non-claude platform>) — render the
-		// platform's native file directly into Claude's agents dir so the
-		// directory-level link still exposes it to that platform.
-		for _, name := range picked {
-			if name == "claude" {
-				continue
-			}
-			p, ok := agent.ResolvePlatform(name)
+	ver := config.PluginMetaVersion(pluginDir)
+	if ver == "" {
+		ver, _ = m.PluginVersion(name)
+	}
+	return ver, nil
+}
+
+// installPluginAgents renders every agents/*.md to each target's native agent
+// path (claude/opencode/kilo = .md, codex = .toml). Real files, no symlinks.
+func installPluginAgents(pluginDir, scope string, targets []string) error {
+	agentsSrc := filepath.Join(pluginDir, "agents")
+	entries, err := os.ReadDir(agentsSrc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		srcPath := filepath.Join(agentsSrc, e.Name())
+		src, err := agent.LoadFile(srcPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping %s (load failed: %v)\n", srcPath, err)
+			continue
+		}
+		if err := agent.Validate(src); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping agent %q (%v)\n", src.Name, err)
+			continue
+		}
+		picked := agent.EffectiveTargets(src, targets)
+		for _, tname := range picked {
+			p, ok := agent.ResolvePlatform(tname)
 			if !ok {
 				continue
 			}
 			data, warns, err := p.Render(src)
 			if err != nil {
-				return wrote, fmt.Errorf("render %s for %s: %w", srcPath, name, err)
+				fmt.Fprintf(os.Stderr, "warning: skipping %s for %s (render failed: %v)\n", src.Name, tname, err)
+				continue
 			}
 			for _, w := range warns {
-				fmt.Fprintf(os.Stderr, "warning [%s -> %s]: %s\n", src.Name, name, w)
+				fmt.Fprintf(os.Stderr, "warning [%s -> %s]: %s\n", src.Name, tname, w)
 			}
-			dst := claude.Path(scope, src.Name)
+			dst := p.Path(scope, src.Name)
 			if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-				return wrote, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 			}
 			if err := os.WriteFile(dst, data, 0644); err != nil {
-				return wrote, fmt.Errorf("write %s: %w", dst, err)
+				return fmt.Errorf("write %s: %w", dst, err)
 			}
-			fmt.Printf("installed %s → %s\n", srcPath, dst)
-			wrote = true
+			fmt.Printf("  agent %s → %s\n", src.Name, dst)
 		}
-	}
-	return wrote, nil
-}
-
-// linkAgentsDirForPlatforms creates one directory symlink per non-Claude
-// target from <platform>/agents/ → .claude/agents/ so all platforms share
-// the same agents tree without per-file bookkeeping.
-func linkAgentsDirForPlatforms(scope string, targets []string) error {
-	target := agentsDir(scope)
-	for _, t := range targets {
-		if t == "claude" {
-			continue
-		}
-		p, ok := agent.ResolvePlatform(t)
-		if !ok {
-			continue
-		}
-		link := p.AgentsDir(scope)
-		if err := replaceTreeBridge(target, link); err != nil {
-			return fmt.Errorf("agents dir bridge for %s: %w", t, err)
-		}
-		fmt.Printf("linked %s → %s\n", link, target)
 	}
 	return nil
 }
 
-// linkRulesBridge creates one directory symlink per non-Claude target so the
-// whole rules tree is shared from Claude. Rules are platform-agnostic, so a
-// directory-level link is enough and avoids per-file bookkeeping.
-func linkRulesBridge(scope string, targets []string) error {
-	target := rulesDir(scope)
-	for _, t := range targets {
-		if t == "claude" {
+// installPluginSkills copies each skill into Claude's canonical skills dir and,
+// when any non-Claude target is selected, links the shared .agents/skills
+// bridge so Codex/Kilo/opencode can reach them.
+func installPluginSkills(pluginDir, scope string, targets []string) error {
+	skillsSrc := filepath.Join(pluginDir, "skills")
+	entries, err := os.ReadDir(skillsSrc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	any := false
+	for _, e := range entries {
+		if !e.IsDir() {
 			continue
 		}
-		p, ok := agent.ResolvePlatform(t)
-		if !ok {
-			continue
+		if err := installTree(filepath.Join(skillsSrc, e.Name()), filepath.Join(skillsDir(scope), e.Name())); err != nil {
+			return err
 		}
-		link := p.RulesDir(scope)
-		if err := replaceTreeBridge(target, link); err != nil {
-			return fmt.Errorf("rules bridge for %s: %w", t, err)
+		any = true
+	}
+	if any && agent.HasNonClaude(targets) {
+		if err := linkSkillsBridge(scope); err != nil {
+			return err
 		}
-		fmt.Printf("linked %s → %s\n", link, target)
 	}
 	return nil
 }
 
-// linkDocForPlatforms creates one directory symlink per non-Claude target
-// from <platform-root>/docs/<name> back to Claude's doc tree.
-func linkDocForPlatforms(scope, name string, targets []string) error {
-	target := filepath.Join(docsDir(scope), name)
-	for _, t := range targets {
-		if t == "claude" {
-			continue
+// installPluginDocs copies the plugin's docs tree into Claude's canonical docs
+// dir and links a per-platform docs directory for every non-Claude target.
+func installPluginDocs(pluginDir, scope string, targets []string) error {
+	docsSrc := filepath.Join(pluginDir, "docs")
+	if _, err := os.Stat(docsSrc); err != nil {
+		if os.IsNotExist(err) {
+			return nil
 		}
-		p, ok := agent.ResolvePlatform(t)
-		if !ok {
-			continue
+		return err
+	}
+	if err := installTree(docsSrc, docsDir(scope)); err != nil {
+		return err
+	}
+	if agent.HasNonClaude(targets) {
+		if err := linkDocsBridge(scope, targets); err != nil {
+			return err
 		}
-		link := filepath.Join(p.DocsDir(scope), name)
-		if err := replaceLink(target, link, true); err != nil {
-			return fmt.Errorf("link doc %s for %s: %w", name, t, err)
-		}
-		fmt.Printf("linked %s → %s\n", link, target)
 	}
 	return nil
 }
 
-// linkSkillsBridge creates the single shared .agents/skills directory link
-// that Codex/Kilo/opencode use to reach Claude's installed skills.
+// installSidecar copies a plugin's `.<platform>/` folder into the platform's
+// config root for the given scope. settings.json (Claude) and
+// config.project.toml (Codex) are deep-merged; everything else is copied.
+func installSidecar(pluginDir string, p agent.Platform, scope string) error {
+	base := filepath.Base(p.ConfigRoot("project")) // ".claude", ".codex", ...
+	srcRoot := filepath.Join(pluginDir, base)
+	if _, err := os.Stat(srcRoot); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	dstRoot := p.ConfigRoot(scope)
+	return filepath.Walk(srcRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(srcRoot, path)
+		if p.Name == "claude" && rel == "settings.json" {
+			fmt.Printf("  merge %s → %s\n", path, filepath.Join(dstRoot, rel))
+			return mergeJSONFile(path, filepath.Join(dstRoot, "settings.json"))
+		}
+		if p.Name == "codex" && rel == "config.project.toml" {
+			dst := filepath.Join(dstRoot, "config.toml")
+			fmt.Printf("  merge %s → %s\n", path, dst)
+			return mergeTOMLFile(path, dst)
+		}
+		dst := filepath.Join(dstRoot, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		if err := copyFile(path, dst); err != nil {
+			return err
+		}
+		fmt.Printf("  sidecar %s → %s\n", path, dst)
+		return nil
+	})
+}
+
+func copySubtreeIfExists(src, dst string) error {
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return installTree(src, dst)
+}
+
+// ---------------------------------------------------------------------------
+// link bridges
+// ---------------------------------------------------------------------------
+
+// linkSkillsBridge links the shared .agents/skills directory to Claude's
+// installed skills so non-Claude platforms can reach them.
 func linkSkillsBridge(scope string) error {
 	target := skillsDir(scope)
 	link := filepath.Join(agent.SharedAgentsRoot(scope), "skills")
 	if err := replaceTreeBridge(target, link); err != nil {
 		return fmt.Errorf("skills bridge: %w", err)
 	}
-	fmt.Printf("linked %s → %s\n", link, target)
+	fmt.Printf("  linked %s → %s\n", link, target)
 	return nil
 }
 
-// resolvePackagesSrc returns the root of `agents/ skills/ docs/` to install from.
-// Priority: --src flag > .aicorc clone_dir/packages > ./packages (legacy fallback).
+// linkDocsBridge links each non-Claude target's docs directory to Claude's
+// canonical docs tree.
+func linkDocsBridge(scope string, targets []string) error {
+	target := docsDir(scope)
+	for _, t := range targets {
+		if t == "claude" {
+			continue
+		}
+		p, ok := agent.ResolvePlatform(t)
+		if !ok {
+			continue
+		}
+		link := p.DocsDir(scope)
+		if err := replaceTreeBridge(target, link); err != nil {
+			return fmt.Errorf("docs bridge for %s: %w", t, err)
+		}
+		fmt.Printf("  linked %s → %s\n", link, target)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// shared helpers (reused by update/list/rm)
+// ---------------------------------------------------------------------------
+
+// resolvePackagesSrc returns the root holding plugins/ and docs/ to install
+// from. Priority: --src flag > .aicorc clone_dir/packages > ./packages.
 func resolvePackagesSrc() (string, error) {
 	if flagSrc != "" {
 		return flagSrc, nil
@@ -397,68 +466,20 @@ func resolvePackagesSrc() (string, error) {
 	if rc != nil && rc.CloneDir != "" {
 		return config.PackagesDir(rc.CloneDir), nil
 	}
-	// legacy fallback for users who have not run `aico init` yet
 	if _, err := os.Stat("packages"); err == nil {
-		fmt.Fprintln(os.Stderr, "warning: .aicorc not found — falling back to ./packages. Run `aico init` to set up the package repo.")
+		fmt.Fprintln(os.Stderr, "warning: .aicorc not found — falling back to ./packages. Run `aico init` first.")
 		return "packages", nil
 	}
 	return "", fmt.Errorf("no package source found — run `aico init` first or pass --src")
 }
 
-// recordInstall updates ~/.aico/.lock with this install, merging per-item
-// version maps with the existing record for the same (path, scope).
-func recordInstall(src, scope string, targets []string, sum *installSummary) error {
-	lock, err := config.LoadLock()
-	if err != nil {
-		return err
+func scopeFromGlobal(global bool) string {
+	if global {
+		return "user"
 	}
-
-	installPath := scopeRoot(scope)
-	version := gitCommit(repoRoot(src))
-
-	var existing config.InstallRecord
-	for _, r := range lock.Installs {
-		if r.Path == installPath && r.Scope == scope {
-			existing = r
-			break
-		}
-	}
-
-	lock.Upsert(config.InstallRecord{
-		Path:    installPath,
-		Scope:   scope,
-		Target:  agent.FormatTargetList(targets),
-		Agents:  mergeVersions(existing.Agents, sum.agents),
-		Skills:  mergeVersions(existing.Skills, sum.skills),
-		Docs:    mergeVersions(existing.Docs, sum.docs),
-		Rules:   mergeVersions(existing.Rules, sum.rules),
-		Version: version,
-	})
-	if err := config.SaveLock(lock); err != nil {
-		return fmt.Errorf("save .lock: %w", err)
-	}
-	return nil
+	return "project"
 }
 
-// mergeVersions returns a new map with b overlaid on a (b wins on conflict).
-// Nil inputs are treated as empty. Returns nil if both are empty to keep the
-// YAML output clean.
-func mergeVersions(a, b map[string]string) map[string]string {
-	if len(a) == 0 && len(b) == 0 {
-		return nil
-	}
-	out := map[string]string{}
-	for k, v := range a {
-		out[k] = v
-	}
-	for k, v := range b {
-		out[k] = v
-	}
-	return out
-}
-
-// scopeRoot returns the anchor directory for a scope record — project uses CWD
-// so different projects each get their own .lock entry.
 func scopeRoot(scope string) string {
 	if scope == "user" {
 		h, _ := os.UserHomeDir()
@@ -468,8 +489,6 @@ func scopeRoot(scope string) string {
 	return cwd
 }
 
-// repoRoot walks up from src to find a `.git` directory. Returns src when none
-// is found (so gitCommit yields "" gracefully).
 func repoRoot(src string) string {
 	dir, err := filepath.Abs(src)
 	if err != nil {
@@ -497,6 +516,15 @@ func gitCommit(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func containsStr(s []string, target string) bool {
+	for _, v := range s {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------- copy primitives ----------
 
 func installTree(src, dst string) error {
@@ -518,11 +546,7 @@ func installTree(src, dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-		if err := copyFile(path, target); err != nil {
-			return err
-		}
-		fmt.Printf("installed %s → %s\n", path, target)
-		return nil
+		return copyFile(path, target)
 	})
 }
 
@@ -547,32 +571,16 @@ func copyFile(src, dst string) error {
 
 // ---------- path helpers for Claude-canonical content ----------
 
-func agentsDir(scope string) string {
-	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "agents")
-	}
-	return filepath.Join(".claude", "agents")
-}
+func skillsDir(scope string) string { return filepath.Join(claudeRoot(scope), "skills") }
+func docsDir(scope string) string   { return filepath.Join(claudeRoot(scope), "docs") }
+func rulesDir(scope string) string  { return filepath.Join(claudeRoot(scope), "rules") }
+func hooksDir(scope string) string  { return filepath.Join(claudeRoot(scope), "hooks") }
 
-func skillsDir(scope string) string {
+func claudeRoot(scope string) string {
 	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "skills")
+		return filepath.Join(homeDir(), ".claude")
 	}
-	return filepath.Join(".claude", "skills")
-}
-
-func docsDir(scope string) string {
-	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "docs")
-	}
-	return filepath.Join(".claude", "docs")
-}
-
-func rulesDir(scope string) string {
-	if scope == "user" {
-		return filepath.Join(homeDir(), ".claude", "rules")
-	}
-	return filepath.Join(".claude", "rules")
+	return ".claude"
 }
 
 func homeDir() string {
