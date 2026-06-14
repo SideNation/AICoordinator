@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
@@ -80,9 +81,9 @@ func runInstall(args []string) error {
 			return err
 		}
 		if rec.Plugins == nil {
-			rec.Plugins = map[string]string{}
+			rec.Plugins = map[string]config.PluginState{}
 		}
-		rec.Plugins[name] = ver
+		rec.Plugins[name] = config.PluginState{Version: ver, Updated: nowStamp()}
 	}
 
 	rec.Version = gitCommit(repoRoot(src))
@@ -523,6 +524,12 @@ func containsStr(s []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// nowStamp returns the current local date/time for recording install/update
+// time in the lock.
+func nowStamp() string {
+	return time.Now().Format("2006-01-02 15:04:05")
 }
 
 // ---------- copy primitives ----------

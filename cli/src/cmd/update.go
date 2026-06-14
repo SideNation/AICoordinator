@@ -125,7 +125,7 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 	}
 
 	cliTargets := agent.ParseLockTarget(rec.Target)
-	newPlugins := map[string]string{}
+	newPlugins := map[string]config.PluginState{}
 	for name, locked := range rec.Plugins {
 		declared, ok := manifest.PluginVersion(name)
 		if !ok {
@@ -137,21 +137,28 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 			newPlugins[name] = locked
 			continue
 		}
-		if declared == locked {
-			newPlugins[name] = locked
+		if declared == locked.Version {
+			newPlugins[name] = locked // unchanged — keep original install/update time
 			continue
 		}
-		fmt.Printf("  %s: %s → %s\n", name, displayVersion(locked), declared)
+		fmt.Printf("  %s: %s → %s\n", name, displayVersion(locked.Version), declared)
 		targets := effectiveTargets(cliTargets, manifest.Plugins[name].Target)
 		ver, err := installPlugin(manifest, cloneDir, name, rec.Scope, targets, &rec)
 		if err != nil {
 			return rec, err
 		}
-		newPlugins[name] = ver
+		newPlugins[name] = config.PluginState{Version: ver, Updated: nowStamp()}
 	}
 
-	rec.Plugins = nilIfEmpty(newPlugins)
+	rec.Plugins = nilIfEmptyStates(newPlugins)
 	return rec, nil
+}
+
+func nilIfEmptyStates(m map[string]config.PluginState) map[string]config.PluginState {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // pluginDirFor resolves a plugin folder even when the manifest no longer

@@ -62,7 +62,7 @@ func listInstalled(lock *config.Lock) error {
 	if rec.Version != "" {
 		fmt.Printf("  package version: %s\n", rec.Version)
 	}
-	printPluginSection("Plugins", rec.Plugins, "")
+	printPluginStates("Plugins", rec.Plugins, "")
 	printPluginSection("Docs", rec.Docs, "")
 	if len(rec.Plugins)+len(rec.Docs) == 0 {
 		fmt.Println("  (no items)")
@@ -77,7 +77,7 @@ func listAllRecords(lock *config.Lock) error {
 	}
 	for i, rec := range lock.Installs {
 		fmt.Printf("Install %d: %s (scope=%s, target=%s)\n", i+1, rec.Path, rec.Scope, rec.Target)
-		printPluginSection("Plugins", rec.Plugins, "  ")
+		printPluginStates("Plugins", rec.Plugins, "  ")
 		printPluginSection("Docs", rec.Docs, "  ")
 		fmt.Println()
 	}
@@ -98,7 +98,7 @@ func listVsManifest(lock *config.Lock) error {
 	}
 	scope := scopeFromGlobal(flagListGlobal)
 	rec := findInstall(lock, scope)
-	installed := map[string]string{}
+	installed := map[string]config.PluginState{}
 	if rec != nil {
 		installed = rec.Plugins
 	}
@@ -128,17 +128,20 @@ func listVsManifest(lock *config.Lock) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for _, n := range manifest.PluginNames() {
 		declVer := manifest.Plugins[n].Version
-		haveVer, ok := installed[n]
+		st, ok := installed[n]
 		marker, status := "○", "not installed"
 		if ok {
 			marker = "✓"
 			switch {
-			case haveVer == "":
+			case st.Version == "":
 				status = "installed (untracked) → update available"
-			case haveVer == declVer:
+			case st.Version == declVer:
 				status = "up to date"
 			default:
-				status = fmt.Sprintf("installed %s → update available", haveVer)
+				status = fmt.Sprintf("installed %s → update available", st.Version)
+			}
+			if st.Updated != "" {
+				status += " (" + st.Updated + ")"
 			}
 		}
 		fmt.Fprintf(w, "  %s %s\t%s\t%s\n", marker, n, declVer, status)
@@ -174,6 +177,34 @@ func printPluginSection(title string, m map[string]string, indent string) {
 			v = "(untracked)"
 		}
 		fmt.Fprintf(w, "%s  %s\t%s\n", indent, name, v)
+	}
+	w.Flush()
+}
+
+// printPluginStates prints "<name> <version> <installed/updated time>" for each
+// installed plugin so `list` shows what is installed and when.
+func printPluginStates(title string, m map[string]config.PluginState, indent string) {
+	if len(m) == 0 {
+		return
+	}
+	fmt.Printf("%s%s:\n", indent, title)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		st := m[name]
+		v := st.Version
+		if v == "" {
+			v = "(untracked)"
+		}
+		upd := st.Updated
+		if upd == "" {
+			upd = "-"
+		}
+		fmt.Fprintf(w, "%s  %s\t%s\t%s\n", indent, name, v, upd)
 	}
 	w.Flush()
 }

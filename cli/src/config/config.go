@@ -26,19 +26,27 @@ type Rc struct {
 	Models   map[string]map[string]string `yaml:"models,omitempty"`  // platform -> tier -> model id overrides
 }
 
+// PluginState records what was installed for one plugin: the manifest version
+// and the date/time of the last install or update (local time, "2006-01-02
+// 15:04:05").
+type PluginState struct {
+	Version string `yaml:"version"`
+	Updated string `yaml:"updated,omitempty"`
+}
+
 // InstallRecord describes one install destination tracked in .lock.
-// Plugins maps each installed plugin's name to the manifest version it was
-// installed from; Docs does the same for remote docs. InitDone lists the
-// plugins whose _init scaffold has already been applied (so update and repeat
-// installs do not re-copy it).
+// Plugins maps each installed plugin's name to its state (version + timestamp);
+// Docs maps remote docs to their version. InitDone lists the plugins whose
+// _init scaffold has already been applied (so update and repeat installs do not
+// re-copy it).
 type InstallRecord struct {
-	Path     string            `yaml:"path"`               // absolute install directory (project root or user home)
-	Scope    string            `yaml:"scope"`              // "project" | "user"
-	Target   string            `yaml:"target"`             // "claude" | "opencode" | "all"
-	Plugins  map[string]string `yaml:"plugins,omitempty"`  // plugin name -> manifest version
-	Docs     map[string]string `yaml:"docs,omitempty"`     // doc name -> manifest version
-	InitDone []string          `yaml:"initdone,omitempty"` // plugins whose _init scaffold was applied
-	Version  string            `yaml:"version,omitempty"`  // package repo commit hash at install time
+	Path     string                 `yaml:"path"`               // absolute install directory (project root or user home)
+	Scope    string                 `yaml:"scope"`              // "project" | "user"
+	Target   string                 `yaml:"target"`             // "claude" | "opencode" | "all"
+	Plugins  map[string]PluginState `yaml:"plugins,omitempty"`  // plugin name -> {version, updated}
+	Docs     map[string]string      `yaml:"docs,omitempty"`     // doc name -> manifest version
+	InitDone []string               `yaml:"initdone,omitempty"` // plugins whose _init scaffold was applied
+	Version  string                 `yaml:"version,omitempty"`  // package repo commit hash at install time
 }
 
 type Lock struct {

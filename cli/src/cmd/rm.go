@@ -79,7 +79,7 @@ func runRm(patterns []string) error {
 		rec.InitDone = removeStr(rec.InitDone, name)
 		fmt.Printf("removed plugin %s\n", name)
 	}
-	rec.Plugins = nilIfEmpty(rec.Plugins)
+	rec.Plugins = nilIfEmptyStates(rec.Plugins)
 
 	return config.SaveLock(lock)
 }
