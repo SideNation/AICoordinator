@@ -13,7 +13,7 @@ import (
 var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
-	Short:   "List installed items, manifest contents, or items available to install",
+	Short:   "List installed plugins, the manifest, or plugins available to install",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runList()
 	},
@@ -29,8 +29,8 @@ var (
 func init() {
 	listCmd.Flags().BoolVarP(&flagListGlobal, "global", "g", false, "operate on the user-scope (home) install instead of current project")
 	listCmd.Flags().BoolVarP(&flagListAll, "all", "a", false, "show every install record in .lock (across projects and user)")
-	listCmd.Flags().BoolVarP(&flagListAvailable, "available", "v", false, "show items declared in manifest but not yet installed at the target scope")
-	listCmd.Flags().BoolVarP(&flagListManifest, "manifest", "m", false, "show the full manifest with install status for the target scope")
+	listCmd.Flags().BoolVarP(&flagListAvailable, "available", "v", false, "show plugins declared in the manifest but not yet installed")
+	listCmd.Flags().BoolVarP(&flagListManifest, "manifest", "m", false, "show the full manifest with install status")
 	rootCmd.AddCommand(listCmd)
 }
 
@@ -38,24 +38,19 @@ func runList() error {
 	if flagListAvailable && flagListManifest {
 		return fmt.Errorf("--available and --manifest are mutually exclusive")
 	}
-
 	lock, err := config.LoadLock()
 	if err != nil {
 		return err
 	}
-
 	if flagListAll {
 		return listAllRecords(lock)
 	}
-
 	if flagListAvailable || flagListManifest {
 		return listVsManifest(lock)
 	}
-
 	return listInstalled(lock)
 }
 
-// listInstalled prints the install record matching cwd (or home for -g).
 func listInstalled(lock *config.Lock) error {
 	scope := scopeFromGlobal(flagListGlobal)
 	rec := findInstall(lock, scope)
@@ -63,23 +58,18 @@ func listInstalled(lock *config.Lock) error {
 		fmt.Printf("no install tracked at %s (scope=%s)\n", scopeRoot(scope), scope)
 		return nil
 	}
-
 	fmt.Printf("Install: %s (scope=%s, target=%s)\n", rec.Path, rec.Scope, rec.Target)
 	if rec.Version != "" {
 		fmt.Printf("  package version: %s\n", rec.Version)
 	}
-	printSection("Agents", rec.Agents, "")
-	printSection("Skills", rec.Skills, "")
-	printSection("Docs", rec.Docs, "")
-	printSection("Rules", rec.Rules, "")
-
-	if len(rec.Agents)+len(rec.Skills)+len(rec.Docs)+len(rec.Rules) == 0 {
+	printPluginStates("Plugins", rec.Plugins, "")
+	printPluginSection("Docs", rec.Docs, "")
+	if len(rec.Plugins)+len(rec.Docs) == 0 {
 		fmt.Println("  (no items)")
 	}
 	return nil
 }
 
-// listAllRecords prints every install record in .lock, in a compact form.
 func listAllRecords(lock *config.Lock) error {
 	if len(lock.Installs) == 0 {
 		fmt.Println("no installs tracked")
@@ -87,18 +77,13 @@ func listAllRecords(lock *config.Lock) error {
 	}
 	for i, rec := range lock.Installs {
 		fmt.Printf("Install %d: %s (scope=%s, target=%s)\n", i+1, rec.Path, rec.Scope, rec.Target)
-		printSection("Agents", rec.Agents, "  ")
-		printSection("Skills", rec.Skills, "  ")
-		printSection("Docs", rec.Docs, "  ")
-		printSection("Rules", rec.Rules, "  ")
+		printPluginStates("Plugins", rec.Plugins, "  ")
+		printPluginSection("Docs", rec.Docs, "  ")
 		fmt.Println()
 	}
 	return nil
 }
 
-// listVsManifest compares manifest contents against the target-scope install
-// record and prints either available-to-install items or the full manifest
-// with status, depending on which flag is set.
 func listVsManifest(lock *config.Lock) error {
 	rc, err := config.LoadRc()
 	if err != nil {
@@ -111,32 +96,58 @@ func listVsManifest(lock *config.Lock) error {
 	if err != nil {
 		return err
 	}
-
 	scope := scopeFromGlobal(flagListGlobal)
 	rec := findInstall(lock, scope)
-	installed := installedView(rec)
+	installed := map[string]config.PluginState{}
+	if rec != nil {
+		installed = rec.Plugins
+	}
 
 	if flagListAvailable {
-		printAvailable(manifest, installed)
+		var names []string
+		for n := range manifest.Plugins {
+			if _, ok := installed[n]; !ok {
+				names = append(names, n)
+			}
+		}
+		sort.Strings(names)
+		if len(names) == 0 {
+			fmt.Println("all manifest plugins are installed")
+			return nil
+		}
+		fmt.Println("Available to install (declared in manifest, not yet installed):")
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		for _, n := range names {
+			fmt.Fprintf(w, "  %s\t%s\n", n, manifest.Plugins[n].Version)
+		}
+		w.Flush()
 		return nil
 	}
-	printManifestWithStatus(manifest, installed)
-	return nil
-}
 
-// installedView extracts the per-kind installed maps from a record (which may
-// be nil) so callers can do membership/version lookups without nil checks.
-func installedView(rec *config.InstallRecord) struct {
-	agents, skills, docs, rules map[string]string
-} {
-	if rec == nil {
-		return struct {
-			agents, skills, docs, rules map[string]string
-		}{}
+	fmt.Println("Plugins:")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, n := range manifest.PluginNames() {
+		declVer := manifest.Plugins[n].Version
+		st, ok := installed[n]
+		marker, status := "○", "not installed"
+		if ok {
+			marker = "✓"
+			switch {
+			case st.Version == "":
+				status = "installed (untracked) → update available"
+			case st.Version == declVer:
+				status = "up to date"
+			default:
+				status = fmt.Sprintf("installed %s → update available", st.Version)
+			}
+			if st.Updated != "" {
+				status += " (" + st.Updated + ")"
+			}
+		}
+		fmt.Fprintf(w, "  %s %s\t%s\t%s\n", marker, n, declVer, status)
 	}
-	return struct {
-		agents, skills, docs, rules map[string]string
-	}{rec.Agents, rec.Skills, rec.Docs, rec.Rules}
+	w.Flush()
+	return nil
 }
 
 func findInstall(lock *config.Lock, scope string) *config.InstallRecord {
@@ -149,16 +160,18 @@ func findInstall(lock *config.Lock, scope string) *config.InstallRecord {
 	return nil
 }
 
-// printSection writes a "<indent>Title:\n<indent>  name version\n" block via
-// tabwriter so columns line up. Empty maps print nothing. The indent prefix
-// is preserved on every line so nested blocks (--all view) align correctly.
-func printSection(title string, m map[string]string, indent string) {
+func printPluginSection(title string, m map[string]string, indent string) {
 	if len(m) == 0 {
 		return
 	}
 	fmt.Printf("%s%s:\n", indent, title)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for _, name := range sortedKeys(m) {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		v := m[name]
 		if v == "" {
 			v = "(untracked)"
@@ -168,84 +181,30 @@ func printSection(title string, m map[string]string, indent string) {
 	w.Flush()
 }
 
-// printAvailable lists manifest entries not present in the installed maps.
-func printAvailable(manifest *config.Manifest, installed struct {
-	agents, skills, docs, rules map[string]string
-}) {
-	avail := func(title string, declared map[string]config.ManifestEntry, have map[string]string) {
-		var names []string
-		for name := range declared {
-			if _, ok := have[name]; !ok {
-				names = append(names, name)
-			}
-		}
-		if len(names) == 0 {
-			return
-		}
-		sort.Strings(names)
-		fmt.Printf("%s:\n", title)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		for _, n := range names {
-			fmt.Fprintf(w, "  %s\t%s\n", n, declared[n].Version)
-		}
-		w.Flush()
+// printPluginStates prints "<name> <version> <installed/updated time>" for each
+// installed plugin so `list` shows what is installed and when.
+func printPluginStates(title string, m map[string]config.PluginState, indent string) {
+	if len(m) == 0 {
+		return
 	}
-
-	fmt.Println("Available to install (declared in manifest, not yet installed):")
-	avail("Agents", manifest.Agents, installed.agents)
-	avail("Skills", manifest.Skills, installed.skills)
-	avail("Docs", manifest.Docs, installed.docs)
-	avail("Rules", manifest.Rules, installed.rules)
-}
-
-// printManifestWithStatus prints every manifest entry annotated with install
-// status: ✓ installed (with version delta), ○ not installed.
-func printManifestWithStatus(manifest *config.Manifest, installed struct {
-	agents, skills, docs, rules map[string]string
-}) {
-	section := func(title string, declared map[string]config.ManifestEntry, have map[string]string) {
-		if len(declared) == 0 {
-			return
-		}
-		fmt.Printf("%s:\n", title)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		var names []string
-		for n := range declared {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			declVer := declared[n].Version
-			haveVer, ok := have[n]
-			marker := "○"
-			status := "not installed"
-			if ok {
-				marker = "✓"
-				switch {
-				case haveVer == "":
-					status = "installed (untracked) → update available"
-				case haveVer == declVer:
-					status = "up to date"
-				default:
-					status = fmt.Sprintf("installed %s → update available", haveVer)
-				}
-			}
-			fmt.Fprintf(w, "  %s %s\t%s\t%s\n", marker, n, declVer, status)
-		}
-		w.Flush()
+	fmt.Printf("%s%s:\n", indent, title)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
 	}
-
-	section("Agents", manifest.Agents, installed.agents)
-	section("Skills", manifest.Skills, installed.skills)
-	section("Docs", manifest.Docs, installed.docs)
-	section("Rules", manifest.Rules, installed.rules)
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+	sort.Strings(names)
+	for _, name := range names {
+		st := m[name]
+		v := st.Version
+		if v == "" {
+			v = "(untracked)"
+		}
+		upd := st.Updated
+		if upd == "" {
+			upd = "-"
+		}
+		fmt.Fprintf(w, "%s  %s\t%s\t%s\n", indent, name, v, upd)
 	}
-	sort.Strings(out)
-	return out
+	w.Flush()
 }

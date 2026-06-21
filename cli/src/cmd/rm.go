@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/nexturecorp/aico/src/agent"
 	"github.com/nexturecorp/aico/src/config"
@@ -12,8 +13,8 @@ import (
 )
 
 var rmCmd = &cobra.Command{
-	Use:   "rm [agent|skill|doc|rule] <pattern>...",
-	Short: "Remove installed agents, skills, docs, or rules (supports globs and auto-discovery)",
+	Use:   "rm <plugin>...",
+	Short: "Remove installed plugins (their agents, skills, docs, rules, hooks)",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRm(args)
@@ -24,17 +25,11 @@ var flagRmGlobal bool
 
 func init() {
 	rmCmd.Flags().BoolVarP(&flagRmGlobal, "global", "g", false, "remove from user-scope (home) install instead of current project")
+	rmCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 	rootCmd.AddCommand(rmCmd)
 }
 
-// runRm parses args, locates the matching install record, deletes matched
-// items from disk, and saves the updated .lock.
-func runRm(args []string) error {
-	kind, patterns := parseRmArgs(args)
-	if len(patterns) == 0 {
-		return fmt.Errorf("at least one name or pattern is required")
-	}
-
+func runRm(patterns []string) error {
 	scope := scopeFromGlobal(flagRmGlobal)
 	installPath := scopeRoot(scope)
 
@@ -42,8 +37,13 @@ func runRm(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	idx := findRecord(lock, installPath, scope)
+	idx := -1
+	for i, r := range lock.Installs {
+		if r.Path == installPath && r.Scope == scope {
+			idx = i
+			break
+		}
+	}
 	if idx < 0 {
 		return fmt.Errorf("no install tracked at %s (scope=%s)", installPath, scope)
 	}
@@ -60,190 +60,108 @@ func runRm(args []string) error {
 		defer os.Chdir(orig)
 	}
 
-	matches := collectMatches(rec, kind, patterns)
+	src, err := resolvePackagesSrc()
+	if err != nil {
+		return err
+	}
+	cloneDir := filepath.Dir(src)
+	manifest, _ := config.LoadManifest(cloneDir) // best-effort; rm works from lock too
+
+	matches := matchPlugins(rec, manifest, patterns)
 	if len(matches) == 0 {
-		fmt.Fprintf(os.Stderr, "warning: no items match %v\n", patterns)
+		fmt.Fprintf(os.Stderr, "warning: no installed plugins match %v\n", patterns)
 		return nil
 	}
 
-	for _, m := range matches {
-		if err := removeItem(rec, m.kind, m.name); err != nil {
-			return err
-		}
-		delete(itemMap(rec, m.kind), m.name)
-		fmt.Printf("removed %s %s\n", m.kind, m.name)
+	for _, name := range matches {
+		removePluginAssets(pluginDirFor(cloneDir, manifest, name), scope)
+		delete(rec.Plugins, name)
+		rec.InitDone = removeStr(rec.InitDone, name)
+		fmt.Printf("removed plugin %s\n", name)
 	}
-
-	rec.Agents = nilIfEmpty(rec.Agents)
-	rec.Skills = nilIfEmpty(rec.Skills)
-	rec.Docs = nilIfEmpty(rec.Docs)
-	rec.Rules = nilIfEmpty(rec.Rules)
+	rec.Plugins = nilIfEmptyStates(rec.Plugins)
 
 	return config.SaveLock(lock)
 }
 
-// parseRmArgs splits args into (kind, patterns). When the first arg is
-// exactly "agent"/"skill"/"doc"/"rule", it becomes the kind filter; otherwise
-// kind is "" (auto-discovery across all kinds).
-func parseRmArgs(args []string) (string, []string) {
-	switch args[0] {
-	case "agent", "skill", "doc", "rule":
-		return args[0], args[1:]
-	}
-	return "", args
-}
-
-func findRecord(lock *config.Lock, path, scope string) int {
-	for i, r := range lock.Installs {
-		if r.Path == path && r.Scope == scope {
-			return i
+// matchPlugins resolves patterns against the installed plugin set. A pattern
+// may be a plugin name, an alias (resolved via the manifest), or a glob over
+// installed plugin names. Results are sorted and deduplicated.
+func matchPlugins(rec *config.InstallRecord, manifest *config.Manifest, patterns []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if _, ok := rec.Plugins[name]; ok && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
 		}
 	}
-	return -1
-}
-
-type matchedItem struct {
-	kind string // "agent" | "skill" | "doc"
-	name string
-}
-
-// collectMatches walks the maps relevant to `kind` (or all maps when kind is
-// "") and returns every entry whose name matches any of the patterns. Results
-// are deduplicated and sorted for deterministic output.
-func collectMatches(rec *config.InstallRecord, kind string, patterns []string) []matchedItem {
-	seen := map[matchedItem]bool{}
-	var out []matchedItem
-
-	add := func(k string, m map[string]string) {
-		if m == nil {
-			return
+	for _, p := range patterns {
+		if isGlob(p) {
+			for name := range rec.Plugins {
+				if ok, _ := filepath.Match(p, name); ok {
+					add(name)
+				}
+			}
+			continue
 		}
-		for name := range m {
-			if !matchesAny(name, patterns) {
+		if manifest != nil {
+			if name, _, ok := manifest.ResolvePlugin(p); ok {
+				add(name)
 				continue
 			}
-			item := matchedItem{kind: k, name: name}
-			if seen[item] {
-				continue
-			}
-			seen[item] = true
-			out = append(out, item)
 		}
+		add(p)
 	}
-
-	if kind == "" || kind == "agent" {
-		add("agent", rec.Agents)
-	}
-	if kind == "" || kind == "skill" {
-		add("skill", rec.Skills)
-	}
-	if kind == "" || kind == "doc" {
-		add("doc", rec.Docs)
-	}
-	if kind == "" || kind == "rule" {
-		add("rule", rec.Rules)
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].kind != out[j].kind {
-			return out[i].kind < out[j].kind
-		}
-		return out[i].name < out[j].name
-	})
+	sort.Strings(out)
 	return out
 }
 
-// matchesAny reports whether name matches any of the patterns. A pattern with
-// no glob metacharacters (* ? [) must match exactly; otherwise filepath.Match
-// is used (returns false on syntax errors).
-func matchesAny(name string, patterns []string) bool {
-	for _, p := range patterns {
-		if isGlob(p) {
-			ok, err := filepath.Match(p, name)
-			if err == nil && ok {
-				return true
-			}
-		} else if p == name {
-			return true
-		}
-	}
-	return false
-}
-
 func isGlob(p string) bool {
-	for i := 0; i < len(p); i++ {
-		switch p[i] {
-		case '*', '?', '[':
-			return true
-		}
-	}
-	return false
+	return strings.ContainsAny(p, "*?[")
 }
 
-// itemMap returns the InstallRecord map field corresponding to kind, so the
-// caller can delete keys from it directly.
-func itemMap(rec *config.InstallRecord, kind string) map[string]string {
-	switch kind {
-	case "agent":
-		return rec.Agents
-	case "skill":
-		return rec.Skills
-	case "doc":
-		return rec.Docs
-	case "rule":
-		return rec.Rules
-	}
-	return nil
-}
-
-// removeItem deletes the on-disk artifacts for one tracked item. Missing
-// files are tolerated since the user may have removed them already.
-func removeItem(rec *config.InstallRecord, kind, name string) error {
-	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
-	switch kind {
-	case "agent":
-		for _, pn := range platforms {
-			p, ok := agent.ResolvePlatform(pn)
-			if !ok {
+// removePluginAssets deletes the on-disk artifacts a plugin installed by
+// re-reading the plugin source folder. Missing files are tolerated.
+func removePluginAssets(pluginDir, scope string) {
+	// agents — remove the rendered file for every platform extension.
+	if entries, err := os.ReadDir(filepath.Join(pluginDir, "agents")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 				continue
 			}
-			if err := removeIfExists(p.Path(rec.Scope, name)); err != nil {
-				return err
-			}
-			if err := removeIfExists(p.LinkedAgentPath(rec.Scope, name)); err != nil {
-				return err
+			name := strings.TrimSuffix(e.Name(), ".md")
+			for _, p := range agent.Platforms() {
+				os.Remove(p.Path(scope, name))
 			}
 		}
-	case "skill":
-		// Bridge symlink stays — it covers the whole skills directory and
-		// other skills may still need it.
-		return removeIfExists(filepath.Join(skillsDir(rec.Scope), name))
-	case "doc":
-		for _, pn := range platforms {
-			if pn == "claude" {
-				continue
-			}
-			p, ok := agent.ResolvePlatform(pn)
-			if !ok {
-				continue
-			}
-			if err := removeIfExists(filepath.Join(p.DocsDir(rec.Scope), name)); err != nil {
-				return err
+	}
+	// skills — remove each named skill directory from the canonical store.
+	if entries, err := os.ReadDir(filepath.Join(pluginDir, "skills")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				os.RemoveAll(filepath.Join(skillsDir(scope), e.Name()))
 			}
 		}
-		return removeIfExists(filepath.Join(docsDir(rec.Scope), name))
-	case "rule":
-		// Rules are shared via a single directory symlink per non-Claude
-		// platform — deleting the Claude file removes it from every
-		// platform's view at once.
-		return removeIfExists(filepath.Join(rulesDir(rec.Scope), name+".md"))
 	}
-	return nil
+	// docs / rules / hooks — remove the files this plugin contributed.
+	removeMirroredTree(filepath.Join(pluginDir, "docs"), docsDir(scope))
+	removeMirroredTree(filepath.Join(pluginDir, "rules"), rulesDir(scope))
+	removeMirroredTree(filepath.Join(pluginDir, "hooks"), hooksDir(scope))
 }
 
-func removeIfExists(path string) error {
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove %s: %w", path, err)
-	}
-	return nil
+// removeMirroredTree removes, from dst, every file that exists at the same
+// relative path under src. Empty and missing trees are ignored.
+func removeMirroredTree(src, dst string) {
+	filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return nil
+		}
+		os.Remove(filepath.Join(dst, rel))
+		return nil
+	})
 }

@@ -14,7 +14,7 @@ import (
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Pull latest package repo and reinstall items whose manifest version changed",
+	Short: "Pull latest package repo and reinstall plugins whose manifest version changed",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runUpdate()
 	},
@@ -40,8 +40,8 @@ func runUpdate() error {
 		return fmt.Errorf(".aicorc not found — run `aico init` first")
 	}
 
-	// Step 1: pull latest. A pull failure should not block the update — the
-	// local clone is still a valid source.
+	// A pull failure should not block the update — the local clone is still
+	// a valid source.
 	fmt.Printf("→ pulling %s\n", rc.CloneDir)
 	if err := runGit(rc.CloneDir, "pull", "--ff-only"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: git pull failed (%v) — continuing with current clone\n", err)
@@ -51,7 +51,6 @@ func runUpdate() error {
 	if err != nil {
 		return err
 	}
-
 	lock, err := config.LoadLock()
 	if err != nil {
 		return err
@@ -64,16 +63,16 @@ func runUpdate() error {
 	}
 
 	src := config.PackagesDir(rc.CloneDir)
-	version := gitCommit(rc.CloneDir)
+	cloneDir := rc.CloneDir
+	version := gitCommit(cloneDir)
 
-	for i, rec := range records {
+	for _, rec := range records {
 		fmt.Printf("→ updating %s (scope=%s target=%s)\n", rec.Path, rec.Scope, rec.Target)
-		updated, err := updateRecord(src, rec, manifest)
+		updated, err := updateRecord(cloneDir, src, rec, manifest)
 		if err != nil {
 			return err
 		}
 		updated.Version = version
-		records[i] = updated
 		lock.Upsert(updated)
 	}
 
@@ -99,7 +98,6 @@ func pickUpdateRecords(lock *config.Lock, rc *config.Rc) []config.InstallRecord 
 		}
 		return out
 	}
-	// no flag: update current directory if tracked
 	cwd, _ := os.Getwd()
 	var out []config.InstallRecord
 	for _, r := range lock.Installs {
@@ -110,13 +108,11 @@ func pickUpdateRecords(lock *config.Lock, rc *config.Rc) []config.InstallRecord 
 	return out
 }
 
-// updateRecord reconciles one install record against the manifest:
-//   - items whose manifest version differs from the locked version are reinstalled
-//   - items no longer in the manifest are offered for deletion (y/n)
-//   - items whose version matches are left alone
-//
-// Returns the updated record with refreshed version maps.
-func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifest) (config.InstallRecord, error) {
+// updateRecord reconciles one install record against the manifest. Plugins
+// whose declared version differs are reinstalled (assets only — the _init
+// scaffold is guarded by InitDone and is not re-applied). Plugins no longer in
+// the manifest are offered for removal.
+func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *config.Manifest) (config.InstallRecord, error) {
 	if rec.Scope == "project" {
 		orig, err := os.Getwd()
 		if err != nil {
@@ -128,151 +124,50 @@ func updateRecord(src string, rec config.InstallRecord, manifest *config.Manifes
 		defer os.Chdir(orig)
 	}
 
-	// Claude is always part of the install — re-apply that invariant when
-	// reading legacy lock entries that might omit it.
-	platforms := agent.EnsureClaude(agent.ParseLockTarget(rec.Target))
-	cloneDir := filepath.Dir(src)
-
-	// ----- agents -----
-	newAgents := map[string]string{}
-	for name, locked := range rec.Agents {
-		declared, ok := manifest.AgentVersion(name)
+	cliTargets := agent.ParseLockTarget(rec.Target)
+	newPlugins := map[string]config.PluginState{}
+	for name, locked := range rec.Plugins {
+		declared, ok := manifest.PluginVersion(name)
 		if !ok {
-			if confirmRemoval("agent", name, rec.Scope) {
-				removeAgentFromPlatforms(rec.Scope, name, platforms)
+			if confirmRemoval("plugin", name, rec.Scope) {
+				removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope)
+				rec.InitDone = removeStr(rec.InitDone, name)
 				continue
 			}
-			newAgents[name] = locked
+			newPlugins[name] = locked
 			continue
 		}
-		if declared == locked {
-			newAgents[name] = locked
+		if declared == locked.Version {
+			newPlugins[name] = locked // unchanged — keep original install/update time
 			continue
 		}
-		fmt.Printf("  agents/%s: %s → %s\n", name, displayVersion(locked), declared)
-		srcPath := manifest.AgentSource(cloneDir, name)
-		if _, err := installAgentFromSource(srcPath, rec.Scope, platforms); err != nil {
+		fmt.Printf("  %s: %s → %s\n", name, displayVersion(locked.Version), declared)
+		targets := effectiveTargets(cliTargets, manifest.Plugins[name].Target)
+		ver, err := installPlugin(manifest, cloneDir, name, rec.Scope, targets, &rec)
+		if err != nil {
 			return rec, err
 		}
-		newAgents[name] = declared
+		newPlugins[name] = config.PluginState{Version: ver, Updated: nowStamp()}
 	}
 
-	if len(newAgents) > 0 && agent.HasNonClaude(platforms) {
-		if err := linkAgentsDirForPlatforms(rec.Scope, platforms); err != nil {
-			return rec, err
-		}
-	}
-
-	// ----- skills -----
-	newSkills := map[string]string{}
-	for name, locked := range rec.Skills {
-		declared, ok := manifest.SkillVersion(name)
-		if !ok {
-			if confirmRemoval("skill", name, rec.Scope) {
-				target := filepath.Join(skillsDir(rec.Scope), name)
-				if err := os.RemoveAll(target); err != nil {
-					return rec, fmt.Errorf("remove %s: %w", target, err)
-				}
-				continue
-			}
-			newSkills[name] = locked
-			continue
-		}
-		if declared == locked {
-			newSkills[name] = locked
-			continue
-		}
-		fmt.Printf("  skills/%s: %s → %s\n", name, displayVersion(locked), declared)
-		target := filepath.Join(skillsDir(rec.Scope), name)
-		if err := os.RemoveAll(target); err != nil {
-			return rec, fmt.Errorf("remove %s: %w", target, err)
-		}
-		if err := installTree(filepath.Join(src, "skills", name), target); err != nil {
-			return rec, err
-		}
-		newSkills[name] = declared
-	}
-	if len(newSkills) > 0 && agent.HasNonClaude(platforms) {
-		if err := linkSkillsBridge(rec.Scope); err != nil {
-			return rec, err
-		}
-	}
-
-	// ----- docs -----
-	newDocs := map[string]string{}
-	for name, locked := range rec.Docs {
-		declared, ok := manifest.DocVersion(name)
-		if !ok {
-			if confirmRemoval("doc", name, rec.Scope) {
-				removeDocFromPlatforms(rec.Scope, name, platforms)
-				target := filepath.Join(docsDir(rec.Scope), name)
-				if err := os.RemoveAll(target); err != nil {
-					return rec, fmt.Errorf("remove %s: %w", target, err)
-				}
-				continue
-			}
-			newDocs[name] = locked
-			continue
-		}
-		if declared == locked {
-			newDocs[name] = locked
-			continue
-		}
-		fmt.Printf("  docs/%s: %s → %s\n", name, displayVersion(locked), declared)
-		target := filepath.Join(docsDir(rec.Scope), name)
-		if err := os.RemoveAll(target); err != nil {
-			return rec, fmt.Errorf("remove %s: %w", target, err)
-		}
-		if err := installTree(filepath.Join(src, "docs", name), target); err != nil {
-			return rec, err
-		}
-		if err := linkDocForPlatforms(rec.Scope, name, platforms); err != nil {
-			return rec, err
-		}
-		newDocs[name] = declared
-	}
-
-	// ----- rules -----
-	newRules := map[string]string{}
-	for name, locked := range rec.Rules {
-		declared, ok := manifest.RuleVersion(name)
-		if !ok {
-			if confirmRemoval("rule", name, rec.Scope) {
-				target := filepath.Join(rulesDir(rec.Scope), name+".md")
-				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-					return rec, fmt.Errorf("remove %s: %w", target, err)
-				}
-				continue
-			}
-			newRules[name] = locked
-			continue
-		}
-		if declared == locked {
-			newRules[name] = locked
-			continue
-		}
-		fmt.Printf("  rules/%s: %s → %s\n", name, displayVersion(locked), declared)
-		ruleSrc := filepath.Join(src, "rules", name+".md")
-		ruleDst := filepath.Join(rulesDir(rec.Scope), name+".md")
-		if err := os.MkdirAll(filepath.Dir(ruleDst), 0755); err != nil {
-			return rec, fmt.Errorf("mkdir %s: %w", filepath.Dir(ruleDst), err)
-		}
-		if err := copyFile(ruleSrc, ruleDst); err != nil {
-			return rec, err
-		}
-		newRules[name] = declared
-	}
-	if len(newRules) > 0 && agent.HasNonClaude(platforms) {
-		if err := linkRulesBridge(rec.Scope, platforms); err != nil {
-			return rec, err
-		}
-	}
-
-	rec.Agents = nilIfEmpty(newAgents)
-	rec.Skills = nilIfEmpty(newSkills)
-	rec.Docs = nilIfEmpty(newDocs)
-	rec.Rules = nilIfEmpty(newRules)
+	rec.Plugins = nilIfEmptyStates(newPlugins)
 	return rec, nil
+}
+
+func nilIfEmptyStates(m map[string]config.PluginState) map[string]config.PluginState {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// pluginDirFor resolves a plugin folder even when the manifest no longer
+// declares it (removed plugin): falls back to packages/plugins/<name>.
+func pluginDirFor(cloneDir string, manifest *config.Manifest, name string) string {
+	if _, ok := manifest.Plugins[name]; ok {
+		return manifest.PluginDir(cloneDir, name)
+	}
+	return filepath.Join(config.PackagesDir(cloneDir), "plugins", name)
 }
 
 func displayVersion(v string) string {
@@ -289,34 +184,18 @@ func nilIfEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// removeDocFromPlatforms deletes the per-platform doc symlinks created
-// alongside Claude's canonical doc tree. Missing symlinks are ignored.
-func removeDocFromPlatforms(scope, name string, platforms []string) {
-	for _, pn := range platforms {
-		if pn == "claude" {
-			continue
+func removeStr(s []string, target string) []string {
+	var out []string
+	for _, v := range s {
+		if v != target {
+			out = append(out, v)
 		}
-		p, ok := agent.ResolvePlatform(pn)
-		if !ok {
-			continue
-		}
-		os.Remove(filepath.Join(p.DocsDir(scope), name))
 	}
+	return out
 }
 
-// removeAgentFromPlatforms deletes the agent file from Claude's agents dir.
-// Non-Claude platforms share the same dir via a directory symlink, so removing
-// Claude's file is sufficient.
-func removeAgentFromPlatforms(scope, name string, platforms []string) {
-	claude, ok := agent.ResolvePlatform("claude")
-	if !ok {
-		return
-	}
-	os.Remove(claude.Path(scope, name))
-}
-
-// confirmRemoval prompts the user before deleting an item that no longer
-// appears in the manifest. Defaults to "no" on empty input or non-TTY.
+// confirmRemoval prompts before deleting an item that no longer appears in the
+// manifest. Defaults to "no" on empty input or non-TTY.
 func confirmRemoval(kind, name, scope string) bool {
 	fmt.Printf("  %s %q (scope=%s) is not in the manifest. Remove it? [y/N]: ", kind, name, scope)
 	reader := bufio.NewReader(os.Stdin)

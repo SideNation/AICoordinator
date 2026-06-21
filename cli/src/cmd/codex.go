@@ -75,4 +75,3 @@ func runCodex() error {
 	fmt.Printf("linked %s → %s\n", link, target)
 	return nil
 }
-

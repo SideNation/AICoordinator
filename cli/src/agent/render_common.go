@@ -55,10 +55,10 @@ func SetModelOverrides(overrides map[string]map[string]string) {
 func DefaultModelMaps() map[string]map[string]string {
 	out := map[string]map[string]string{}
 	for platform, m := range map[string]map[string]string{
-		"claude":    claudeModelMap,
-		"codex":     codexModelMap,
-		"opencode":  opencodeModelMap,
-		"kilo":      kiloModelMap,
+		"claude":   claudeModelMap,
+		"codex":    codexModelMap,
+		"opencode": opencodeModelMap,
+		"kilo":     kiloModelMap,
 	} {
 		pm := make(map[string]string, len(m))
 		for k, v := range m {
