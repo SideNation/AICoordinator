@@ -141,8 +141,11 @@ func isJunction(path string) bool {
 	if err != nil {
 		return false
 	}
-	// Directory junctions appear as directories with the reparse-point
-	// attribute set; checking IsDir + ModeIrregular is the closest portable
-	// hint without pulling in golang.org/x/sys/windows.
-	return info.IsDir() && info.Mode()&os.ModeIrregular != 0
+	// A directory junction / mount point is a reparse point. Go's os.Lstat
+	// reports such non-symlink reparse points with ModeIrregular (and NOT
+	// ModeDir), so we must not also require IsDir() — that was the bug that
+	// made a second linkSkillsBridge call (e.g. a chained plugin) fail to
+	// recognise the junction it had just created. Plain symlinks are handled
+	// separately by callers via ModeSymlink.
+	return info.Mode()&os.ModeIrregular != 0
 }
