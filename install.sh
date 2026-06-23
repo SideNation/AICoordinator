@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="SideNation/AISkills"
+REPO="SideNation/AICoordinator"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS" in

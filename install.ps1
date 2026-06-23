@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$repo = "SideNation/AISkills"
+$repo = "SideNation/AICoordinator"
 $installDir = "$env:LOCALAPPDATA\aico"
 $exe = "$installDir\aico.exe"
 
