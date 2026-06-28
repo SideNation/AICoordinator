@@ -151,7 +151,38 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 	}
 
 	rec.Plugins = nilIfEmptyStates(newPlugins)
+
+	newDocs := map[string]string{}
+	for name, lockedVer := range rec.Docs {
+		declared, ok := manifest.DocVersion(name)
+		if !ok {
+			if confirmRemoval("doc", name, rec.Scope) {
+				removeDocAssets(name, rec.Scope)
+				continue
+			}
+			newDocs[name] = lockedVer
+			continue
+		}
+		if declared == lockedVer {
+			newDocs[name] = lockedVer // unchanged
+			continue
+		}
+		fmt.Printf("  %s: %s → %s\n", name, displayVersion(lockedVer), declared)
+		ver, err := installDoc(manifest, cloneDir, name, rec.Scope, cliTargets)
+		if err != nil {
+			return rec, err
+		}
+		newDocs[name] = ver
+	}
+	rec.Docs = nilIfEmpty(newDocs)
+
 	return rec, nil
+}
+
+// removeDocAssets deletes a doc set installed under the canonical docs dir.
+// Missing files are tolerated.
+func removeDocAssets(name, scope string) {
+	os.RemoveAll(filepath.Join(docsDir(scope), name))
 }
 
 func nilIfEmptyStates(m map[string]config.PluginState) map[string]config.PluginState {

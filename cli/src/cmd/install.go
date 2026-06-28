@@ -15,8 +15,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var installCmd = &cobra.Command{
-	Use:   "install [plugin...]",
+var pluginCmd = &cobra.Command{
+	Use:   "plugin [name...]",
 	Short: "Install plugins (agents, skills, docs, rules, hooks, platform sidecars)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runInstall(args)
@@ -31,10 +31,10 @@ var (
 )
 
 func init() {
-	installCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.codex, ~/.config/...) instead of current project")
-	installCmd.Flags().StringVar(&flagTarget, "target", "all", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all")
-	installCmd.Flags().BoolVar(&flagAll, "all", false, "install every plugin declared in the manifest")
-	installCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
+	pluginCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.codex, ~/.config/...) instead of current project")
+	pluginCmd.Flags().StringVar(&flagTarget, "target", "all", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all")
+	pluginCmd.Flags().BoolVar(&flagAll, "all", false, "install every plugin declared in the manifest")
+	pluginCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
 
 func runInstall(args []string) error {
@@ -122,7 +122,7 @@ func resolveRequestedPlugins(m *config.Manifest, args []string, all bool) ([]str
 }
 
 func printPluginPicker(m *config.Manifest) {
-	fmt.Println("플러그인 이름을 지정하세요.  예) aico install <name>   또는   aico install --all")
+	fmt.Println("플러그인 이름을 지정하세요.  예) aico plugin <name>   또는   aico plugin --all")
 	fmt.Println("설치 가능한 플러그인:")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for _, n := range m.PluginNames() {
