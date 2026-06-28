@@ -26,5 +26,5 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(pluginCmd)
 }

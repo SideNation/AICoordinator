@@ -319,6 +319,34 @@ func (m *Manifest) PluginDir(cloneDir, name string) string {
 	return filepath.Join(PackagesDir(cloneDir), "plugins", folder)
 }
 
+// DocNames returns every declared doc name, sorted.
+func (m *Manifest) DocNames() []string {
+	out := make([]string, 0, len(m.Docs))
+	for n := range m.Docs {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveDoc maps a name (case-insensitive) to the canonical doc name. Docs
+// have no aliases. Returns ok=false when the token matches nothing.
+func (m *Manifest) ResolveDoc(token string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(token))
+	if key == "" {
+		return "", false
+	}
+	if _, ok := m.Docs[key]; ok {
+		return key, true
+	}
+	for name := range m.Docs {
+		if strings.ToLower(name) == key {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // DocVersion returns the declared version for a doc, or "" if missing.
 func (m *Manifest) DocVersion(name string) (string, bool) {
 	e, ok := m.Docs[name]

@@ -34,3 +34,5 @@ project-root/
 생성을 원하는 
 
 ## Imported Claude Cowork project instructions
+
+# aico install 시 docs/manifest.yaml과 같은 구조를 참고 해서 설치한다.
