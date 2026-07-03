@@ -32,7 +32,7 @@ var (
 
 func init() {
 	pluginCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude, ~/.codex, ~/.config/...) instead of current project")
-	pluginCmd.Flags().StringVar(&flagTarget, "target", "all", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all")
+	pluginCmd.Flags().StringVar(&flagTarget, "target", "claude,codex", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all. opencode/kilo are opt-in")
 	pluginCmd.Flags().BoolVar(&flagAll, "all", false, "install every plugin declared in the manifest")
 	pluginCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 }
@@ -199,8 +199,9 @@ func loadOrNewRecord(lock *config.Lock, scope string, cliTargets []string) confi
 // ---------------------------------------------------------------------------
 
 // installPlugin materialises one plugin's assets for the given targets and
-// returns the version recorded in the lock (the plugin's _meta.meta SemVer,
-// falling back to the manifest version).
+// returns the version recorded in the lock (the manifest SemVer — the single
+// source of truth that `update` and `list` diff against — falling back to the
+// plugin's _meta.meta SemVer only when the manifest entry omits a version).
 func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []string, rec *config.InstallRecord) (string, error) {
 	pluginDir := m.PluginDir(cloneDir, name)
 	if _, err := os.Stat(pluginDir); err != nil {
@@ -251,9 +252,9 @@ func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []s
 		}
 	}
 
-	ver := config.PluginMetaVersion(pluginDir)
+	ver, _ := m.PluginVersion(name)
 	if ver == "" {
-		ver, _ = m.PluginVersion(name)
+		ver = config.PluginMetaVersion(pluginDir)
 	}
 	return ver, nil
 }
