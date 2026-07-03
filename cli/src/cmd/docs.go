@@ -22,7 +22,7 @@ var docsCmd = &cobra.Command{
 
 func init() {
 	docsCmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "install to user home (~/.claude/docs ...) instead of current project")
-	docsCmd.Flags().StringVar(&flagTarget, "target", "all", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all")
+	docsCmd.Flags().StringVar(&flagTarget, "target", "claude,codex", "target platforms: comma list of claude|cl, codex|co, kilo|ki, opencode|op, or all. opencode/kilo are opt-in")
 	docsCmd.Flags().BoolVar(&flagAll, "all", false, "install every doc declared in the manifest")
 	docsCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 	rootCmd.AddCommand(docsCmd)
