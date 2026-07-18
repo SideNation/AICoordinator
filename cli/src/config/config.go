@@ -26,12 +26,27 @@ type Rc struct {
 	Models   map[string]map[string]string `yaml:"models,omitempty"`  // platform -> tier -> model id overrides
 }
 
-// PluginState records what was installed for one plugin: the manifest version
-// and the date/time of the last install or update (local time, "2006-01-02
-// 15:04:05").
+// PluginAssets records the identities of the on-disk assets a plugin installed
+// into the canonical (Claude) stores, so a later install/update can drop the
+// ones that have since vanished from the plugin source. Skills and Agents are
+// named entities (a skill dir name; a rendered agent's Name); Docs/Rules/Hooks
+// are file paths relative to their canonical directory.
+type PluginAssets struct {
+	Skills []string `yaml:"skills,omitempty"`
+	Agents []string `yaml:"agents,omitempty"`
+	Docs   []string `yaml:"docs,omitempty"`
+	Rules  []string `yaml:"rules,omitempty"`
+	Hooks  []string `yaml:"hooks,omitempty"`
+}
+
+// PluginState records what was installed for one plugin: the manifest version,
+// the date/time of the last install or update (local time, "2006-01-02
+// 15:04:05"), and the assets it owns. Assets is nil for records written before
+// asset tracking existed (legacy locks).
 type PluginState struct {
-	Version string `yaml:"version"`
-	Updated string `yaml:"updated,omitempty"`
+	Version string        `yaml:"version"`
+	Updated string        `yaml:"updated,omitempty"`
+	Assets  *PluginAssets `yaml:"assets,omitempty"`
 }
 
 // InstallRecord describes one install destination tracked in .lock.
