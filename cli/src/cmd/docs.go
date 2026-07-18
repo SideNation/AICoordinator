@@ -59,6 +59,9 @@ func runDocs(args []string) error {
 	}
 	rec := loadOrNewRecord(lock, scope, cliTargets)
 
+	// Reconcile: drop installed docs that vanished from the manifest.
+	pruneVanishedDocs(manifest, &rec)
+
 	for _, name := range names {
 		ver, err := installDoc(manifest, cloneDir, name, scope, cliTargets)
 		if err != nil {
