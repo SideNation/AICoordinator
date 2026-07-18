@@ -80,7 +80,7 @@ func TestReconcilePluginAssets(t *testing.T) {
 	}
 	cur := config.PluginAssets{Skills: []string{"a", "b"}}
 
-	reconcilePluginAssets(&old, cur, "user")
+	reconcilePluginAssets(&old, cur, config.PluginAssets{}, "user")
 
 	// c removed, a and b kept.
 	for _, s := range []string{"a", "b"} {
@@ -114,7 +114,7 @@ func TestReconcilePluginAssetsNilOldNoop(t *testing.T) {
 	confirmRemove = func(kind, name, scope, reason string) bool { return true }
 	defer func() { confirmRemove = restore }()
 
-	reconcilePluginAssets(nil, config.PluginAssets{}, "user")
+	reconcilePluginAssets(nil, config.PluginAssets{}, config.PluginAssets{}, "user")
 
 	if _, err := os.Stat(filepath.Join(skillsDir("user"), "keep")); err != nil {
 		t.Errorf("nil old should be a no-op, but skill was removed: %v", err)
@@ -131,9 +131,45 @@ func TestReconcileKeepsOnDecline(t *testing.T) {
 	defer func() { confirmRemove = restore }()
 
 	old := config.PluginAssets{Skills: []string{"c"}}
-	reconcilePluginAssets(&old, config.PluginAssets{}, "user")
+	reconcilePluginAssets(&old, config.PluginAssets{}, config.PluginAssets{}, "user")
 
 	if _, err := os.Stat(filepath.Join(skillsDir("user"), "c")); err != nil {
 		t.Errorf("declined removal should keep skill c, got %v", err)
+	}
+}
+
+func TestReconcilePluginAssetsKeepsSharedAssets(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	restore := confirmRemove
+	confirmRemove = func(kind, name, scope, reason string) bool { return true }
+	defer func() { confirmRemove = restore }()
+
+	claude, _ := agent.ResolvePlatform("claude")
+	writeFile(t, filepath.Join(skillsDir("user"), "shared", "SKILL.md"), "skill")
+	writeFile(t, claude.Path("user", "shared-agent"), "agent")
+	writeFile(t, filepath.Join(docsDir("user"), "shared.md"), "doc")
+	writeFile(t, filepath.Join(rulesDir("user"), "shared.md"), "rule")
+	writeFile(t, filepath.Join(hooksDir("user"), "shared.sh"), "hook")
+
+	old := config.PluginAssets{
+		Skills: []string{"shared"}, Agents: []string{"shared-agent"}, Docs: []string{"shared.md"},
+		Rules: []string{"shared.md"}, Hooks: []string{"shared.sh"},
+	}
+	rec := config.InstallRecord{Plugins: map[string]config.PluginState{
+		"dropping": {Assets: &old},
+		"keeping":  {Assets: &old},
+	}}
+	reconcilePluginAssets(&old, config.PluginAssets{}, otherPluginAssets(&rec, "dropping"), "user")
+
+	for _, path := range []string{
+		filepath.Join(skillsDir("user"), "shared"), claude.Path("user", "shared-agent"),
+		filepath.Join(docsDir("user"), "shared.md"), filepath.Join(rulesDir("user"), "shared.md"),
+		filepath.Join(hooksDir("user"), "shared.sh"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("shared asset %s should be kept, got %v", path, err)
+		}
 	}
 }

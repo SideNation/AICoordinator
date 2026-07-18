@@ -261,7 +261,7 @@ func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []s
 	// diffing the prior record against the current source set. rec.Plugins[name]
 	// still holds the pre-install state here (the caller overwrites it after).
 	collected := collectPluginAssets(pluginDir, scope, targets)
-	reconcilePluginAssets(rec.Plugins[name].Assets, collected, scope)
+	reconcilePluginAssets(rec.Plugins[name].Assets, collected, otherPluginAssets(rec, name), scope)
 
 	ver, _ := m.PluginVersion(name)
 	if ver == "" {

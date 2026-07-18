@@ -147,8 +147,9 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 			if _, err := os.Stat(pluginDir); err == nil {
 				targets := effectiveTargets(cliTargets, manifest.Plugins[name].Target)
 				collected := collectPluginAssets(pluginDir, rec.Scope, targets)
-				reconcilePluginAssets(locked.Assets, collected, rec.Scope)
+				reconcilePluginAssets(locked.Assets, collected, otherPluginAssets(&rec, name), rec.Scope)
 				locked.Assets = &collected
+				rec.Plugins[name] = locked
 			}
 			newPlugins[name] = locked // unchanged — keep original install/update time
 			continue
@@ -159,7 +160,9 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 		if err != nil {
 			return rec, err
 		}
-		newPlugins[name] = config.PluginState{Version: ver, Updated: nowStamp(), Assets: &assets}
+		state := config.PluginState{Version: ver, Updated: nowStamp(), Assets: &assets}
+		newPlugins[name] = state
+		rec.Plugins[name] = state
 	}
 
 	rec.Plugins = nilIfEmptyStates(newPlugins)
@@ -308,28 +311,47 @@ func hasLegacyRecord(rec *config.InstallRecord) bool {
 
 // reconcilePluginAssets removes the assets a plugin used to install but no
 // longer provides — everything recorded in old that is absent from the current
-// source set cur — after per-item confirmation. old is nil for legacy records,
-// in which case there is nothing to reconcile (the one-time sweep handles those).
-func reconcilePluginAssets(old *config.PluginAssets, cur config.PluginAssets, scope string) {
+// source set cur and not owned by another installed plugin — after per-item
+// confirmation. old is nil for legacy records, in which case there is nothing
+// to reconcile (the one-time sweep handles those).
+func reconcilePluginAssets(old *config.PluginAssets, cur, other config.PluginAssets, scope string) {
 	if old == nil {
 		return
 	}
 	const reason = "was removed from its plugin"
-	for _, name := range subtractStrs(old.Skills, cur.Skills) {
+	for _, name := range subtractStrs(subtractStrs(old.Skills, cur.Skills), other.Skills) {
 		if confirmRemove("skill", name, scope, reason) {
 			os.RemoveAll(filepath.Join(skillsDir(scope), name))
 		}
 	}
-	for _, name := range subtractStrs(old.Agents, cur.Agents) {
+	for _, name := range subtractStrs(subtractStrs(old.Agents, cur.Agents), other.Agents) {
 		if confirmRemove("agent", name, scope, reason) {
 			for _, p := range agent.Platforms() {
 				os.Remove(p.Path(scope, name))
 			}
 		}
 	}
-	reconcileFiles(subtractStrs(old.Docs, cur.Docs), docsDir(scope), "doc", scope, reason)
-	reconcileFiles(subtractStrs(old.Rules, cur.Rules), rulesDir(scope), "rule", scope, reason)
-	reconcileFiles(subtractStrs(old.Hooks, cur.Hooks), hooksDir(scope), "hook", scope, reason)
+	reconcileFiles(subtractStrs(subtractStrs(old.Docs, cur.Docs), other.Docs), docsDir(scope), "doc", scope, reason)
+	reconcileFiles(subtractStrs(subtractStrs(old.Rules, cur.Rules), other.Rules), rulesDir(scope), "rule", scope, reason)
+	reconcileFiles(subtractStrs(subtractStrs(old.Hooks, cur.Hooks), other.Hooks), hooksDir(scope), "hook", scope, reason)
+}
+
+// otherPluginAssets returns the union of assets recorded for every plugin in
+// rec except name. These are still installed in the same scope, so a shared
+// artifact must survive this plugin's reconciliation.
+func otherPluginAssets(rec *config.InstallRecord, name string) config.PluginAssets {
+	var out config.PluginAssets
+	for otherName, state := range rec.Plugins {
+		if otherName == name || state.Assets == nil {
+			continue
+		}
+		out.Skills = append(out.Skills, state.Assets.Skills...)
+		out.Agents = append(out.Agents, state.Assets.Agents...)
+		out.Docs = append(out.Docs, state.Assets.Docs...)
+		out.Rules = append(out.Rules, state.Assets.Rules...)
+		out.Hooks = append(out.Hooks, state.Assets.Hooks...)
+	}
+	return out
 }
 
 // reconcileFiles removes each relative path under dir after confirmation, then
