@@ -185,6 +185,53 @@ func removeDocAssets(name, scope string) {
 	os.RemoveAll(filepath.Join(docsDir(scope), name))
 }
 
+// pruneVanishedPlugins removes, from rec, every installed plugin that no longer
+// appears in the manifest (after per-item confirmation). Called at the start of
+// `aico plugin` so a manifest edit that drops a plugin also cleans up its
+// installed assets. Only touches the current scope's paths, so the caller must
+// already be in the record's directory (install runs in cwd).
+func pruneVanishedPlugins(cloneDir string, manifest *config.Manifest, rec *config.InstallRecord) {
+	if len(rec.Plugins) == 0 {
+		return
+	}
+	kept := map[string]config.PluginState{}
+	for name, st := range rec.Plugins {
+		if _, ok := manifest.PluginVersion(name); ok {
+			kept[name] = st
+			continue
+		}
+		if confirmRemoval("plugin", name, rec.Scope) {
+			removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope)
+			rec.InitDone = removeStr(rec.InitDone, name)
+			continue
+		}
+		kept[name] = st
+	}
+	rec.Plugins = nilIfEmptyStates(kept)
+}
+
+// pruneVanishedDocs removes, from rec, every installed doc that no longer
+// appears in the manifest (after per-item confirmation). Called at the start of
+// `aico docs`.
+func pruneVanishedDocs(manifest *config.Manifest, rec *config.InstallRecord) {
+	if len(rec.Docs) == 0 {
+		return
+	}
+	kept := map[string]string{}
+	for name, ver := range rec.Docs {
+		if _, ok := manifest.DocVersion(name); ok {
+			kept[name] = ver
+			continue
+		}
+		if confirmRemoval("doc", name, rec.Scope) {
+			removeDocAssets(name, rec.Scope)
+			continue
+		}
+		kept[name] = ver
+	}
+	rec.Docs = nilIfEmpty(kept)
+}
+
 func nilIfEmptyStates(m map[string]config.PluginState) map[string]config.PluginState {
 	if len(m) == 0 {
 		return nil

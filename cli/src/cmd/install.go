@@ -69,6 +69,9 @@ func runInstall(args []string) error {
 	}
 	rec := loadOrNewRecord(lock, scope, cliTargets)
 
+	// Reconcile: drop installed plugins that vanished from the manifest.
+	pruneVanishedPlugins(cloneDir, manifest, &rec)
+
 	for _, name := range names {
 		entry := manifest.Plugins[name]
 		targets := effectiveTargets(cliTargets, entry.Target)
