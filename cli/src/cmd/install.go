@@ -71,6 +71,8 @@ func runInstall(args []string) error {
 
 	// Reconcile: drop installed plugins that vanished from the manifest.
 	pruneVanishedPlugins(cloneDir, manifest, &rec)
+	// One-time cleanup of skills stranded before asset tracking existed.
+	pruneOrphanSkills(cloneDir, manifest, &rec, scope)
 
 	for _, name := range names {
 		entry := manifest.Plugins[name]
@@ -79,14 +81,14 @@ func runInstall(args []string) error {
 			fmt.Printf("skipped %s (no enabled targets match plugin target=%v)\n", name, entry.Target)
 			continue
 		}
-		ver, err := installPlugin(manifest, cloneDir, name, scope, targets, &rec)
+		ver, assets, err := installPlugin(manifest, cloneDir, name, scope, targets, &rec)
 		if err != nil {
 			return err
 		}
 		if rec.Plugins == nil {
 			rec.Plugins = map[string]config.PluginState{}
 		}
-		rec.Plugins[name] = config.PluginState{Version: ver, Updated: nowStamp()}
+		rec.Plugins[name] = config.PluginState{Version: ver, Updated: nowStamp(), Assets: &assets}
 	}
 
 	rec.Version = gitCommit(repoRoot(src))
@@ -205,32 +207,32 @@ func loadOrNewRecord(lock *config.Lock, scope string, cliTargets []string) confi
 // returns the version recorded in the lock (the manifest SemVer — the single
 // source of truth that `update` and `list` diff against — falling back to the
 // plugin's _meta.meta SemVer only when the manifest entry omits a version).
-func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []string, rec *config.InstallRecord) (string, error) {
+func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []string, rec *config.InstallRecord) (string, config.PluginAssets, error) {
 	pluginDir := m.PluginDir(cloneDir, name)
 	if _, err := os.Stat(pluginDir); err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("plugin %q not found at %s", name, pluginDir)
+			return "", config.PluginAssets{}, fmt.Errorf("plugin %q not found at %s", name, pluginDir)
 		}
-		return "", err
+		return "", config.PluginAssets{}, err
 	}
 	fmt.Printf("→ installing plugin %s (targets=%s)\n", name, strings.Join(targets, ","))
 
 	if err := installPluginAgents(pluginDir, scope, targets); err != nil {
-		return "", err
+		return "", config.PluginAssets{}, err
 	}
 	if err := installPluginSkills(pluginDir, scope, targets); err != nil {
-		return "", err
+		return "", config.PluginAssets{}, err
 	}
 	if err := installPluginDocs(pluginDir, scope, targets); err != nil {
-		return "", err
+		return "", config.PluginAssets{}, err
 	}
 	if agent.HasClaude(targets) {
 		// rules + hooks are Claude-only per PRD.
 		if err := copySubtreeIfExists(filepath.Join(pluginDir, "rules"), rulesDir(scope)); err != nil {
-			return "", err
+			return "", config.PluginAssets{}, err
 		}
 		if err := copySubtreeIfExists(filepath.Join(pluginDir, "hooks"), hooksDir(scope)); err != nil {
-			return "", err
+			return "", config.PluginAssets{}, err
 		}
 	}
 	for _, t := range targets {
@@ -239,7 +241,7 @@ func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []s
 			continue
 		}
 		if err := installSidecar(pluginDir, p, scope); err != nil {
-			return "", err
+			return "", config.PluginAssets{}, err
 		}
 	}
 
@@ -248,18 +250,24 @@ func installPlugin(m *config.Manifest, cloneDir, name, scope string, targets []s
 	if scope == "project" && !containsStr(rec.InitDone, name) {
 		applied, err := applyInitTree(pluginDir, scopeRoot(scope), false)
 		if err != nil {
-			return "", err
+			return "", config.PluginAssets{}, err
 		}
 		if applied {
 			rec.InitDone = append(rec.InitDone, name)
 		}
 	}
 
+	// Reconcile: drop assets this plugin used to own but no longer provides,
+	// diffing the prior record against the current source set. rec.Plugins[name]
+	// still holds the pre-install state here (the caller overwrites it after).
+	collected := collectPluginAssets(pluginDir, scope, targets)
+	reconcilePluginAssets(rec.Plugins[name].Assets, collected, otherPluginAssets(rec, name), scope)
+
 	ver, _ := m.PluginVersion(name)
 	if ver == "" {
 		ver = config.PluginMetaVersion(pluginDir)
 	}
-	return ver, nil
+	return ver, collected, nil
 }
 
 // installPluginAgents renders every agents/*.md to each target's native agent
@@ -363,6 +371,68 @@ func installPluginDocs(pluginDir, scope string, targets []string) error {
 		}
 	}
 	return nil
+}
+
+// collectPluginAssets enumerates the asset identities a plugin's source
+// currently provides for the given target selection. It is the single source of
+// truth used both to record what an install owns and to diff against a prior
+// record when reconciling. Skills are the skills/ subdir names; Agents are the
+// Names of agents/*.md that validate and render to at least one target;
+// Docs/Rules/Hooks are file paths relative to their source subtree. Rules and
+// hooks are Claude-only, matching installPlugin. os.ReadDir and filepath.Walk
+// both yield lexically ordered entries, so results are deterministic.
+func collectPluginAssets(pluginDir, scope string, targets []string) config.PluginAssets {
+	var a config.PluginAssets
+
+	if entries, err := os.ReadDir(filepath.Join(pluginDir, "skills")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				a.Skills = append(a.Skills, e.Name())
+			}
+		}
+	}
+
+	if entries, err := os.ReadDir(filepath.Join(pluginDir, "agents")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			src, err := agent.LoadFile(filepath.Join(pluginDir, "agents", e.Name()))
+			if err != nil {
+				continue
+			}
+			if err := agent.Validate(src); err != nil {
+				continue
+			}
+			if len(agent.EffectiveTargets(src, targets)) == 0 {
+				continue
+			}
+			a.Agents = append(a.Agents, src.Name)
+		}
+	}
+
+	a.Docs = relFilePaths(filepath.Join(pluginDir, "docs"))
+	if agent.HasClaude(targets) {
+		a.Rules = relFilePaths(filepath.Join(pluginDir, "rules"))
+		a.Hooks = relFilePaths(filepath.Join(pluginDir, "hooks"))
+	}
+	return a
+}
+
+// relFilePaths returns the file paths (not dirs) under root, each relative to
+// root, in lexical order. A missing or empty tree yields nil.
+func relFilePaths(root string) []string {
+	var out []string
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if rel, relErr := filepath.Rel(root, path); relErr == nil {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
 }
 
 // installSidecar copies a plugin's `.<platform>/` folder into the platform's

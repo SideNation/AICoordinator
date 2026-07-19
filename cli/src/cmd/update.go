@@ -130,7 +130,7 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 		declared, ok := manifest.PluginVersion(name)
 		if !ok {
 			if confirmRemoval("plugin", name, rec.Scope) {
-				removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope)
+				removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope, locked.Assets)
 				rec.InitDone = removeStr(rec.InitDone, name)
 				continue
 			}
@@ -138,16 +138,31 @@ func updateRecord(cloneDir, src string, rec config.InstallRecord, manifest *conf
 			continue
 		}
 		if declared == locked.Version {
+			// A skill (or other asset) can be deleted from a plugin without a
+			// version bump, so reconcile against the current source and refresh
+			// the owned set even on an unchanged version — but only when the
+			// source is present, so a missing clone never triggers wholesale
+			// removal of everything the record owns.
+			pluginDir := pluginDirFor(cloneDir, manifest, name)
+			if _, err := os.Stat(pluginDir); err == nil {
+				targets := effectiveTargets(cliTargets, manifest.Plugins[name].Target)
+				collected := collectPluginAssets(pluginDir, rec.Scope, targets)
+				reconcilePluginAssets(locked.Assets, collected, otherPluginAssets(&rec, name), rec.Scope)
+				locked.Assets = &collected
+				rec.Plugins[name] = locked
+			}
 			newPlugins[name] = locked // unchanged — keep original install/update time
 			continue
 		}
 		fmt.Printf("  %s: %s → %s\n", name, displayVersion(locked.Version), declared)
 		targets := effectiveTargets(cliTargets, manifest.Plugins[name].Target)
-		ver, err := installPlugin(manifest, cloneDir, name, rec.Scope, targets, &rec)
+		ver, assets, err := installPlugin(manifest, cloneDir, name, rec.Scope, targets, &rec)
 		if err != nil {
 			return rec, err
 		}
-		newPlugins[name] = config.PluginState{Version: ver, Updated: nowStamp()}
+		state := config.PluginState{Version: ver, Updated: nowStamp(), Assets: &assets}
+		newPlugins[name] = state
+		rec.Plugins[name] = state
 	}
 
 	rec.Plugins = nilIfEmptyStates(newPlugins)
@@ -201,7 +216,7 @@ func pruneVanishedPlugins(cloneDir string, manifest *config.Manifest, rec *confi
 			continue
 		}
 		if confirmRemoval("plugin", name, rec.Scope) {
-			removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope)
+			removePluginAssets(pluginDirFor(cloneDir, manifest, name), rec.Scope, st.Assets)
 			rec.InitDone = removeStr(rec.InitDone, name)
 			continue
 		}
@@ -230,6 +245,151 @@ func pruneVanishedDocs(manifest *config.Manifest, rec *config.InstallRecord) {
 		kept[name] = ver
 	}
 	rec.Docs = nilIfEmpty(kept)
+}
+
+// pruneOrphanSkills performs a one-time cleanup of skill directories left over
+// from before asset tracking existed: any skill in the canonical store that no
+// installed plugin's current source provides. It runs only when at least one
+// installed plugin has no recorded assets (a legacy record) — once every record
+// carries its asset set, precise per-plugin reconciliation replaces this sweep.
+// If any installed plugin's source folder can't be read it skips the sweep
+// entirely, so a missing clone never mistakes a plugin's real skills for orphans.
+// Scoped to skills only: that is where stranding actually occurs and where a
+// union diff over the shared store is safe enough (user skills default to keep).
+func pruneOrphanSkills(cloneDir string, manifest *config.Manifest, rec *config.InstallRecord, scope string) {
+	if len(rec.Plugins) == 0 || !hasLegacyRecord(rec) {
+		return
+	}
+	provided := map[string]struct{}{}
+	for name := range rec.Plugins {
+		pluginDir := pluginDirFor(cloneDir, manifest, name)
+		if _, err := os.Stat(pluginDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: plugin %q source not found (%v) — skipping orphan-skill cleanup\n", name, err)
+			return
+		}
+		entries, err := os.ReadDir(filepath.Join(pluginDir, "skills"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // plugin ships no skills
+			}
+			fmt.Fprintf(os.Stderr, "warning: cannot read %q skills (%v) — skipping orphan-skill cleanup\n", name, err)
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				provided[e.Name()] = struct{}{}
+			}
+		}
+	}
+
+	installed, err := os.ReadDir(skillsDir(scope))
+	if err != nil {
+		return
+	}
+	for _, e := range installed {
+		if !e.IsDir() {
+			continue
+		}
+		if _, ok := provided[e.Name()]; ok {
+			continue
+		}
+		if confirmRemove("skill", e.Name(), scope, "is not provided by any installed plugin") {
+			os.RemoveAll(filepath.Join(skillsDir(scope), e.Name()))
+		}
+	}
+}
+
+// hasLegacyRecord reports whether any installed plugin predates asset tracking.
+func hasLegacyRecord(rec *config.InstallRecord) bool {
+	for _, st := range rec.Plugins {
+		if st.Assets == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcilePluginAssets removes the assets a plugin used to install but no
+// longer provides — everything recorded in old that is absent from the current
+// source set cur and not owned by another installed plugin — after per-item
+// confirmation. old is nil for legacy records, in which case there is nothing
+// to reconcile (the one-time sweep handles those).
+func reconcilePluginAssets(old *config.PluginAssets, cur, other config.PluginAssets, scope string) {
+	if old == nil {
+		return
+	}
+	const reason = "was removed from its plugin"
+	for _, name := range subtractStrs(subtractStrs(old.Skills, cur.Skills), other.Skills) {
+		if confirmRemove("skill", name, scope, reason) {
+			os.RemoveAll(filepath.Join(skillsDir(scope), name))
+		}
+	}
+	for _, name := range subtractStrs(subtractStrs(old.Agents, cur.Agents), other.Agents) {
+		if confirmRemove("agent", name, scope, reason) {
+			for _, p := range agent.Platforms() {
+				os.Remove(p.Path(scope, name))
+			}
+		}
+	}
+	reconcileFiles(subtractStrs(subtractStrs(old.Docs, cur.Docs), other.Docs), docsDir(scope), "doc", scope, reason)
+	reconcileFiles(subtractStrs(subtractStrs(old.Rules, cur.Rules), other.Rules), rulesDir(scope), "rule", scope, reason)
+	reconcileFiles(subtractStrs(subtractStrs(old.Hooks, cur.Hooks), other.Hooks), hooksDir(scope), "hook", scope, reason)
+}
+
+// otherPluginAssets returns the union of assets recorded for every plugin in
+// rec except name. These are still installed in the same scope, so a shared
+// artifact must survive this plugin's reconciliation.
+func otherPluginAssets(rec *config.InstallRecord, name string) config.PluginAssets {
+	var out config.PluginAssets
+	for otherName, state := range rec.Plugins {
+		if otherName == name || state.Assets == nil {
+			continue
+		}
+		out.Skills = append(out.Skills, state.Assets.Skills...)
+		out.Agents = append(out.Agents, state.Assets.Agents...)
+		out.Docs = append(out.Docs, state.Assets.Docs...)
+		out.Rules = append(out.Rules, state.Assets.Rules...)
+		out.Hooks = append(out.Hooks, state.Assets.Hooks...)
+	}
+	return out
+}
+
+// reconcileFiles removes each relative path under dir after confirmation, then
+// prunes directories left empty by the removals.
+func reconcileFiles(rels []string, dir, kind, scope, reason string) {
+	for _, rel := range rels {
+		if confirmRemove(kind, rel, scope, reason) {
+			full := filepath.Join(dir, rel)
+			os.Remove(full)
+			pruneEmptyParents(dir, filepath.Dir(full))
+		}
+	}
+}
+
+// pruneEmptyParents removes empty directories from leaf upward, stopping before
+// root. A non-empty or missing directory ends the walk.
+func pruneEmptyParents(root, leaf string) {
+	for leaf != root && strings.HasPrefix(leaf, root+string(filepath.Separator)) {
+		if err := os.Remove(leaf); err != nil {
+			return
+		}
+		leaf = filepath.Dir(leaf)
+	}
+}
+
+// subtractStrs returns the elements of a that are not in b, preserving a's order.
+func subtractStrs(a, b []string) []string {
+	set := make(map[string]struct{}, len(b))
+	for _, x := range b {
+		set[x] = struct{}{}
+	}
+	var out []string
+	for _, x := range a {
+		if _, ok := set[x]; !ok {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func nilIfEmptyStates(m map[string]config.PluginState) map[string]config.PluginState {
@@ -275,7 +435,17 @@ func removeStr(s []string, target string) []string {
 // confirmRemoval prompts before deleting an item that no longer appears in the
 // manifest. Defaults to "no" on empty input or non-TTY.
 func confirmRemoval(kind, name, scope string) bool {
-	fmt.Printf("  %s %q (scope=%s) is not in the manifest. Remove it? [y/N]: ", kind, name, scope)
+	return confirmRemovalReason(kind, name, scope, "is not in the manifest")
+}
+
+// confirmRemove is the confirmation hook used by asset reconciliation and the
+// orphan sweep. It is a variable so tests can stub the interactive prompt.
+var confirmRemove = confirmRemovalReason
+
+// confirmRemovalReason prompts before deleting an item, stating why. Defaults
+// to "no" on empty input or non-TTY.
+func confirmRemovalReason(kind, name, scope, reason string) bool {
+	fmt.Printf("  %s %q (scope=%s) %s. Remove it? [y/N]: ", kind, name, scope, reason)
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil {

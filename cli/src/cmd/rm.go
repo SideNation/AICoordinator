@@ -74,7 +74,8 @@ func runRm(patterns []string) error {
 	}
 
 	for _, name := range matches {
-		removePluginAssets(pluginDirFor(cloneDir, manifest, name), scope)
+		st := rec.Plugins[name]
+		removePluginAssets(pluginDirFor(cloneDir, manifest, name), scope, st.Assets)
 		delete(rec.Plugins, name)
 		rec.InitDone = removeStr(rec.InitDone, name)
 		fmt.Printf("removed plugin %s\n", name)
@@ -121,9 +122,48 @@ func isGlob(p string) bool {
 	return strings.ContainsAny(p, "*?[")
 }
 
-// removePluginAssets deletes the on-disk artifacts a plugin installed by
-// re-reading the plugin source folder. Missing files are tolerated.
-func removePluginAssets(pluginDir, scope string) {
+// removePluginAssets deletes the on-disk artifacts a plugin installed. When the
+// recorded asset set is available (assets != nil) it removes exactly those, so
+// removal works even if the plugin source folder has since changed or vanished.
+// For legacy records with no recorded assets it falls back to re-reading the
+// current plugin source folder. Missing files are tolerated either way.
+func removePluginAssets(pluginDir, scope string, assets *config.PluginAssets) {
+	if assets != nil {
+		removeRecordedAssets(assets, scope)
+		return
+	}
+	removeSourceAssets(pluginDir, scope)
+}
+
+// removeRecordedAssets deletes exactly the assets listed in a lock record.
+func removeRecordedAssets(a *config.PluginAssets, scope string) {
+	for _, name := range a.Skills {
+		os.RemoveAll(filepath.Join(skillsDir(scope), name))
+	}
+	for _, name := range a.Agents {
+		for _, p := range agent.Platforms() {
+			os.Remove(p.Path(scope, name))
+		}
+	}
+	for _, dir := range []struct {
+		root string
+		rels []string
+	}{
+		{docsDir(scope), a.Docs},
+		{rulesDir(scope), a.Rules},
+		{hooksDir(scope), a.Hooks},
+	} {
+		for _, rel := range dir.rels {
+			full := filepath.Join(dir.root, rel)
+			os.Remove(full)
+			pruneEmptyParents(dir.root, filepath.Dir(full))
+		}
+	}
+}
+
+// removeSourceAssets deletes a plugin's artifacts by re-reading its source
+// folder — the legacy path used when no asset set was recorded.
+func removeSourceAssets(pluginDir, scope string) {
 	// agents — remove the rendered file for every platform extension.
 	if entries, err := os.ReadDir(filepath.Join(pluginDir, "agents")); err == nil {
 		for _, e := range entries {
