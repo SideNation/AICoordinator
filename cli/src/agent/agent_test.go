@@ -226,16 +226,25 @@ func TestRenderCodexEffortField(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(out)
-	// model + reasoningEffort + sandbox_mode + prompt block
+	// model + model_reasoning_effort + sandbox_mode + developer_instructions block
 	for _, want := range []string{
 		`name = "code-reviewer"`,
 		`model = "gpt-5.5"`,
-		`reasoningEffort = "high"`,
+		`model_reasoning_effort = "high"`,
 		`sandbox_mode = "read-only"`,
-		`prompt = """`,
+		`developer_instructions = """`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("codex output missing %q:\n%s", want, body)
+		}
+	}
+	// Codex has no per-agent tool-allowlist or color field, and no `prompt`
+	// field — sampleSource sets tools: and color:, so a regression here would
+	// silently write a key Codex can't deserialize (see
+	// WebSearchToolConfigInput) or a key Codex just ignores.
+	for _, unwanted := range []string{"tools =", "color =", "reasoningEffort =", "prompt ="} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("codex output should not contain %q:\n%s", unwanted, body)
 		}
 	}
 }
