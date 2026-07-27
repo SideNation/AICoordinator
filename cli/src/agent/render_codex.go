@@ -12,7 +12,7 @@ import (
 // don't have to escape newlines.
 var codexFieldOrder = []string{
 	"name", "description", "model", "reasoningEffort",
-	"tools", "color",
+	"color",
 	"sandbox_mode", "approvalPolicy",
 }
 
@@ -28,9 +28,11 @@ func renderCodex(src *Source) ([]byte, []string, error) {
 	if src.Effort != "" {
 		doc.set("reasoningEffort", effortForPlatform(src.Effort, "codex"))
 	}
-	if len(src.Tools) > 0 {
-		doc.set("tools", src.Tools)
-	}
+	// Codex's agent-role TOML has no tool-allowlist field: its `tools` key
+	// is reserved for web_search/experimental settings (ToolsToml), not a
+	// permission list. Writing src.Tools there produces a table Codex can't
+	// deserialize (fields land positionally and collide with the untagged
+	// web_search variant), so it's intentionally never emitted here.
 	if src.Color != "" {
 		doc.set("color", src.Color)
 	}
