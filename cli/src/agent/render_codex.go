@@ -8,12 +8,12 @@ import (
 
 // Codex agent files are TOML. The schema is intentionally minimal — common
 // fields at the top level, then any platform overrides as additional keys.
-// The agent body is rendered as a triple-quoted `prompt` literal so authors
-// don't have to escape newlines.
+// The agent body is rendered as a triple-quoted `developer_instructions`
+// literal (Codex's required field for the agent's core instructions) so
+// authors don't have to escape newlines.
 var codexFieldOrder = []string{
-	"name", "description", "model", "reasoningEffort",
-	"color",
-	"sandbox_mode", "approvalPolicy",
+	"name", "description", "model", "model_reasoning_effort",
+	"sandbox_mode", "approval_policy",
 }
 
 func renderCodex(src *Source) ([]byte, []string, error) {
@@ -26,16 +26,15 @@ func renderCodex(src *Source) ([]byte, []string, error) {
 		doc.set("model", modelForPlatform(src.Model, "codex"))
 	}
 	if src.Effort != "" {
-		doc.set("reasoningEffort", effortForPlatform(src.Effort, "codex"))
+		doc.set("model_reasoning_effort", effortForPlatform(src.Effort, "codex"))
 	}
 	// Codex's agent-role TOML has no tool-allowlist field: its `tools` key
 	// is reserved for web_search/experimental settings (ToolsToml), not a
 	// permission list. Writing src.Tools there produces a table Codex can't
 	// deserialize (fields land positionally and collide with the untagged
 	// web_search variant), so it's intentionally never emitted here.
-	if src.Color != "" {
-		doc.set("color", src.Color)
-	}
+	// Codex also has no `color` field (checked against config_toml.rs and
+	// config.schema.json — no match), so src.Color is not emitted either.
 
 	for _, k := range sortedKeys(src.Codex) {
 		v := src.Codex[k]
@@ -61,7 +60,7 @@ func renderCodex(src *Source) ([]byte, []string, error) {
 	}
 	if src.Body != "" {
 		b.WriteString("\n")
-		b.WriteString("prompt = ")
+		b.WriteString("developer_instructions = ")
 		b.WriteString(tomlMultiline(src.Body))
 		b.WriteString("\n")
 	}
