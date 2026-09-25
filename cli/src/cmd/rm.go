@@ -14,17 +14,18 @@ import (
 
 var rmCmd = &cobra.Command{
 	Use:   "rm <plugin>...",
-	Short: "Remove installed plugins (their agents, skills, docs, rules, hooks)",
+	Short: "Remove installed plugins (their agents, skills, docs, rules, hooks), or doc sets with --docs",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRm(args)
 	},
 }
 
-var flagRmGlobal bool
+var flagRmGlobal, flagRmDocs bool
 
 func init() {
 	rmCmd.Flags().BoolVarP(&flagRmGlobal, "global", "g", false, "remove from user-scope (home) install instead of current project")
+	rmCmd.Flags().BoolVar(&flagRmDocs, "docs", false, "remove doc sets (installed by aico docs) instead of plugins")
 	rmCmd.Flags().StringVar(&flagSrc, "src", "", "packages source directory (default: <clone_dir>/packages from .aicorc)")
 	rootCmd.AddCommand(rmCmd)
 }
@@ -67,7 +68,33 @@ func runRm(patterns []string) error {
 	cloneDir := filepath.Dir(src)
 	manifest, _ := config.LoadManifest(cloneDir) // best-effort; rm works from lock too
 
-	matches := matchPlugins(rec, manifest, patterns)
+	if flagRmDocs {
+		var resolve func(string) (string, bool)
+		if manifest != nil {
+			resolve = manifest.ResolveDoc
+		}
+		matches := matchInstalled(rec.Docs, resolve, patterns)
+		if len(matches) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: no installed docs match %v\n", patterns)
+			return nil
+		}
+		for _, name := range matches {
+			removeDocAssets(name, scope)
+			delete(rec.Docs, name)
+			fmt.Printf("removed doc %s\n", name)
+		}
+		rec.Docs = nilIfEmpty(rec.Docs)
+		return config.SaveLock(lock)
+	}
+
+	var resolve func(string) (string, bool)
+	if manifest != nil {
+		resolve = func(p string) (string, bool) {
+			name, _, ok := manifest.ResolvePlugin(p)
+			return name, ok
+		}
+	}
+	matches := matchInstalled(rec.Plugins, resolve, patterns)
 	if len(matches) == 0 {
 		fmt.Fprintf(os.Stderr, "warning: no installed plugins match %v\n", patterns)
 		return nil
@@ -85,29 +112,30 @@ func runRm(patterns []string) error {
 	return config.SaveLock(lock)
 }
 
-// matchPlugins resolves patterns against the installed plugin set. A pattern
-// may be a plugin name, an alias (resolved via the manifest), or a glob over
-// installed plugin names. Results are sorted and deduplicated.
-func matchPlugins(rec *config.InstallRecord, manifest *config.Manifest, patterns []string) []string {
+// matchInstalled resolves patterns against the installed names (keys of
+// installed). A pattern may be a name, a manifest-resolved name/alias (via
+// resolve, which may be nil), or a glob over installed names. Results are
+// sorted and deduplicated.
+func matchInstalled[V any](installed map[string]V, resolve func(string) (string, bool), patterns []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(name string) {
-		if _, ok := rec.Plugins[name]; ok && !seen[name] {
+		if _, ok := installed[name]; ok && !seen[name] {
 			seen[name] = true
 			out = append(out, name)
 		}
 	}
 	for _, p := range patterns {
 		if isGlob(p) {
-			for name := range rec.Plugins {
+			for name := range installed {
 				if ok, _ := filepath.Match(p, name); ok {
 					add(name)
 				}
 			}
 			continue
 		}
-		if manifest != nil {
-			if name, _, ok := manifest.ResolvePlugin(p); ok {
+		if resolve != nil {
+			if name, ok := resolve(p); ok {
 				add(name)
 				continue
 			}

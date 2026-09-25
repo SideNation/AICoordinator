@@ -323,16 +323,19 @@ aico rm csharp               # 이름 또는 별칭
 aico rm 'unity*'             # glob (설치된 플러그인 이름 대상)
 aico rm csharp unity         # 여러 개
 aico rm -g ccgs              # 사용자 환경에서 삭제
+aico rm --docs onejs         # aico docs로 설치한 문서 세트 삭제 (이름/glob)
 ```
 
 ### rm 동작
 - 플러그인의 agents(전 플랫폼 렌더 파일), skills(이름별 디렉터리), docs/rules/hooks(플러그인이 기여한 파일)를 제거.
 - 매칭되는 설치 플러그인이 없으면 경고만 표시하고 종료(에러 X).
 - 디스크에 이미 없는 파일은 무시하고 `.lock`만 정리합니다.
+- `--docs`: 플러그인 대신 `aico docs`로 설치한 문서 세트를 대상으로 `.claude/docs/<name>/`과 `.lock`의 `docs` 항목을 제거합니다. 비-claude 타겟의 `<platform>/docs`는 `.claude/docs` 링크이므로 함께 반영됩니다.
 
 | 플래그 | 기본값 | 설명 |
 |---|---|---|
 | `-g`, `--global` | `false` | user 스코프(홈 디렉터리)에서 삭제 |
+| `--docs` | `false` | 플러그인 대신 문서 세트 삭제 |
 | `--src` | (auto) | 패키지 소스 디렉터리 오버라이드 |
 
 ---
